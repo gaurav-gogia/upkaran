@@ -37,9 +37,10 @@ WebAssembly. Drop files in, get results out — nothing leaves your device.
 
 ### P2P Transfer
 
-- Send files directly to another device over a WebRTC data channel — no relay
-  server
-- Signaling via compressed base64 tokens: share as a QR code or paste as text
+- Send files directly to another device over a WebRTC data channel (file bytes
+  stay peer-to-peer)
+- Quick connect with a 6-digit short code via ephemeral signaling API
+- Signaling fallback via compressed tokens: share as a QR code or paste as text
 - Optional TURN server configuration stored locally for NAT traversal
 - Chunked streaming transfer with progress tracking
 

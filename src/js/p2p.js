@@ -90,25 +90,70 @@ export function resolveIceServers() {
 
 // ── Token encoding ────────────────────────────────────────────────────────────
 
-export function encodeToken(obj) {
-  const json = JSON.stringify(obj);
-  const compressed = deflateSync(strToU8(json), { level: 9 });
+const SIGNAL_VERSION = 1;
+
+function toBase64Url(bytes) {
   let binary = "";
-  for (let i = 0; i < compressed.length; i++) {
-    binary += String.fromCharCode(compressed[i]);
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
   }
-  return btoa(binary);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-export function decodeToken(token) {
-  const clean = token.trim().replace(/\s+/g, "");
-  const binary = atob(clean);
+function fromBase64Url(text) {
+  const normalized = text.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+  const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
+  return bytes;
+}
+
+function normalizeSdpForEncode(sdp) {
+  // SDP uses CRLF by convention, but LF is sufficient for transport and compresses better.
+  return sdp.replace(/\r\n/g, "\n").trim();
+}
+
+function normalizeSdpForDecode(sdp) {
+  return `${sdp}`.replace(/\r?\n/g, "\r\n");
+}
+
+export function encodeToken(obj) {
+  const compact = {
+    v: SIGNAL_VERSION,
+    t: obj.type === "offer" ? "o" : "a",
+    s: normalizeSdpForEncode(obj.sdp)
+  };
+  const json = JSON.stringify(compact);
+  const compressed = deflateSync(strToU8(json), { level: 9 });
+  return toBase64Url(compressed);
+}
+
+export function decodeToken(token) {
+  const clean = token.trim().replace(/\s+/g, "");
+  const bytes = fromBase64Url(clean);
   const decompressed = inflateSync(bytes);
-  return JSON.parse(strFromU8(decompressed));
+  const parsed = JSON.parse(strFromU8(decompressed));
+
+  // New compact schema
+  if (parsed && typeof parsed === "object" && typeof parsed.s !== "undefined" && typeof parsed.t === "string") {
+    return {
+      type: parsed.t === "o" ? "offer" : "answer",
+      sdp: normalizeSdpForDecode(parsed.s)
+    };
+  }
+
+  // Legacy schema compatibility
+  if (parsed && typeof parsed === "object" && typeof parsed.sdp === "string" && typeof parsed.type === "string") {
+    return {
+      type: parsed.type,
+      sdp: normalizeSdpForDecode(parsed.sdp)
+    };
+  }
+
+  throw new Error("Invalid signaling token.");
 }
 
 export function validateToken(token) {

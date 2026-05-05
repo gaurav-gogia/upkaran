@@ -3,11 +3,6 @@
   import Dropzone from "./components/Dropzone.svelte";
   import FileList from "./components/FileList.svelte";
   import Toolbar from "./components/Toolbar.svelte";
-  import ResultsDrawer from "./components/ResultsDrawer.svelte";
-  import PdfTools from "./components/PdfTools.svelte";
-  import ImageTools from "./components/ImageTools.svelte";
-  import FileTools from "./components/FileTools.svelte";
-  import P2PTransfer from "./components/P2PTransfer.svelte";
   import { resolveRouteFromSelection, resolveRoute, ROUTES } from "./routes/router.js";
   import { enrichFiles } from "./js/detect.js";
   import { addResults, clearResults } from "./js/results-store.js";
@@ -76,8 +71,8 @@
       cta: "Open P2P Transfer",
       p2pCta: true,
       items: [
-        "Browser-to-browser, no server",
-        "QR code and text token signaling",
+        "Browser-to-browser file bytes (no file upload server)",
+        "6-digit quick connect code + QR/token fallback",
         "Chunked transfer with SHA-256 verify",
         "Works on the same local network"
       ]
@@ -302,7 +297,9 @@
 
   {#if p2pOpen}
     <div transition:fade>
-      <P2PTransfer {entries} on:filesreceived={onP2PFilesReceived} />
+      {#await import("./components/P2PTransfer.svelte") then mod}
+        <svelte:component this={mod.default} {entries} on:filesreceived={onP2PFilesReceived} />
+      {/await}
     </div>
   {/if}
 
@@ -310,36 +307,45 @@
     <FileList files={entries} busy={processing} on:selectionchange={onFileSelectionChange} on:fileschange={onFilesChange} />
 
     {#if route === ROUTES.PDF}
-      <PdfTools
-        files={effectivePdfFiles}
-        busy={processing}
-        on:processing={(event) => (processing = event.detail)}
-        on:progress={onProgress}
-        on:error={onError}
-        on:output={onOutput}
-      />
+      {#await import("./components/PdfTools.svelte") then mod}
+        <svelte:component
+          this={mod.default}
+          files={effectivePdfFiles}
+          busy={processing}
+          on:processing={(event) => (processing = event.detail)}
+          on:progress={onProgress}
+          on:error={onError}
+          on:output={onOutput}
+        />
+      {/await}
     {/if}
 
     {#if route === ROUTES.IMAGE}
-      <ImageTools
-        files={effectiveImageFiles}
-        busy={processing}
-        on:processing={(event) => (processing = event.detail)}
-        on:progress={onProgress}
-        on:error={onError}
-        on:output={onOutput}
-      />
+      {#await import("./components/ImageTools.svelte") then mod}
+        <svelte:component
+          this={mod.default}
+          files={effectiveImageFiles}
+          busy={processing}
+          on:processing={(event) => (processing = event.detail)}
+          on:progress={onProgress}
+          on:error={onError}
+          on:output={onOutput}
+        />
+      {/await}
     {/if}
 
     {#if route === ROUTES.FILE}
-      <FileTools
-        files={effectiveFiles}
-        busy={processing}
-        on:processing={(event) => (processing = event.detail)}
-        on:progress={onProgress}
-        on:error={onError}
-        on:output={onOutput}
-      />
+      {#await import("./components/FileTools.svelte") then mod}
+        <svelte:component
+          this={mod.default}
+          files={effectiveFiles}
+          busy={processing}
+          on:processing={(event) => (processing = event.detail)}
+          on:progress={onProgress}
+          on:error={onError}
+          on:output={onOutput}
+        />
+      {/await}
     {/if}
   </div>
 
@@ -392,7 +398,9 @@
     </section>
   {/if}
 
-  <ResultsDrawer />
+  {#await import("./components/ResultsDrawer.svelte") then mod}
+    <svelte:component this={mod.default} />
+  {/await}
 </main>
 
 <style>

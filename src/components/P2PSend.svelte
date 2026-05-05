@@ -2,6 +2,8 @@
   import { onDestroy, tick } from "svelte";
   import { createEventDispatcher } from "svelte";
   import { P2PSession, validateToken } from "../js/p2p.js";
+  import { decodeQrFromImageFile } from "../js/qr-image.js";
+  import { createSignalCode, pollSignalAnswer } from "../js/signal-api.js";
 
   export let entries = [];
 
@@ -32,8 +34,16 @@
   let answerScannerActive = false;
   let videoEl = null;
   let scanCanvas = null;
+  let answerImageInputEl = null;
   let scanAnimId = null;
   let jsQRLib = null;
+  let answerScanAutoStarted = false;
+  let signalCode = "";
+  let signalStatus = "";
+  let signalError = "";
+  let signalExpiresInMs = 0;
+  let signalCountdownId = null;
+  let signalRunId = 0;
 
   // ── File selection ────────────────────────────────────────────────────────
 
@@ -112,9 +122,61 @@
       step = "offer-ready";
       await tick();
       if (offerQrCanvas) await renderQr(offerQrCanvas, offerToken);
+      void setupShortCodeFlow();
     } catch (err) {
       errorMsg = `Failed to create offer: ${err.message}`;
       step = "error";
+    }
+  }
+
+  function stopSignalCountdown() {
+    if (signalCountdownId) {
+      clearInterval(signalCountdownId);
+      signalCountdownId = null;
+    }
+  }
+
+  function startSignalCountdown(ttlMs) {
+    stopSignalCountdown();
+    signalExpiresInMs = Math.max(0, Number(ttlMs || 0));
+    if (!signalExpiresInMs) return;
+    signalCountdownId = setInterval(() => {
+      signalExpiresInMs = Math.max(0, signalExpiresInMs - 1000);
+      if (!signalExpiresInMs) {
+        stopSignalCountdown();
+      }
+    }, 1000);
+  }
+
+  async function setupShortCodeFlow() {
+    if (!offerToken.trim()) return;
+
+    const runId = ++signalRunId;
+    signalError = "";
+    signalStatus = "Creating 6-digit code…";
+    signalCode = "";
+    signalExpiresInMs = 0;
+
+    try {
+      const created = await createSignalCode(offerToken);
+      if (runId !== signalRunId) return;
+
+      signalCode = created.code;
+      startSignalCountdown(created.ttlMs);
+      signalStatus = "Waiting for receiver to join code…";
+
+      const remoteAnswer = await pollSignalAnswer(created.code, {
+        timeoutMs: Math.max(30000, Number(created.ttlMs || 120000))
+      });
+      if (runId !== signalRunId) return;
+
+      answerToken = remoteAnswer;
+      signalStatus = "Receiver joined. Connecting…";
+      await submitAnswer();
+    } catch (err) {
+      if (runId !== signalRunId) return;
+      signalStatus = "";
+      signalError = err?.message || "Short code unavailable. Use QR/token fallback.";
     }
   }
 
@@ -142,6 +204,7 @@
   // ── QR scanner for answer ─────────────────────────────────────────────────
 
   async function startAnswerScanner() {
+    if (answerScannerActive) return;
     answerScannerActive = true;
     await tick();
     await loadJsQr();
@@ -149,6 +212,7 @@
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
       videoEl.srcObject = stream;
       await videoEl.play();
+      syncScanCanvasSize();
       scanAnswerLoop();
     } catch (err) {
       answerError = "Camera access denied. Paste the token manually.";
@@ -156,14 +220,31 @@
     }
   }
 
+  function syncScanCanvasSize() {
+    if (!videoEl || !scanCanvas) return;
+    const vw = videoEl.videoWidth || 0;
+    const vh = videoEl.videoHeight || 0;
+    if (!vw || !vh) return;
+    // Use camera-native dimensions for dense QR payloads.
+    if (scanCanvas.width !== vw || scanCanvas.height !== vh) {
+      scanCanvas.width = vw;
+      scanCanvas.height = vh;
+    }
+  }
+
   function scanAnswerLoop() {
     if (!answerScannerActive) return;
+    syncScanCanvasSize();
+    if (!scanCanvas?.width || !scanCanvas?.height) {
+      scanAnimId = requestAnimationFrame(scanAnswerLoop);
+      return;
+    }
     const ctx = scanCanvas.getContext("2d");
     const w = scanCanvas.width;
     const h = scanCanvas.height;
     ctx.drawImage(videoEl, 0, 0, w, h);
     const imgData = ctx.getImageData(0, 0, w, h);
-    const code = jsQRLib(imgData.data, imgData.width, imgData.height, { inversionAttempts: "dontInvert" });
+    const code = jsQRLib(imgData.data, imgData.width, imgData.height, { inversionAttempts: "attemptBoth" });
     if (code?.data) {
       answerToken = code.data;
       stopAnswerScanner();
@@ -179,6 +260,26 @@
     if (videoEl?.srcObject) {
       videoEl.srcObject.getTracks().forEach((t) => t.stop());
       videoEl.srcObject = null;
+    }
+  }
+
+  async function onAnswerImagePicked(event) {
+    const file = event?.target?.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    answerError = "";
+    try {
+      const token = await decodeQrFromImageFile(file);
+      if (!token) {
+        answerError = "No QR code found in selected image.";
+        return;
+      }
+      answerToken = token;
+      stopAnswerScanner();
+      void submitAnswer();
+    } catch {
+      answerError = "Could not read QR from image. Try another screenshot or camera scan.";
     }
   }
 
@@ -212,6 +313,8 @@
 
   function reset() {
     stopAnswerScanner();
+    signalRunId += 1;
+    stopSignalCountdown();
     session?.close();
     session = null;
     step = "idle";
@@ -225,12 +328,28 @@
     totalFiles = 0;
     transportInfo = null;
     selectedIds = new Set();
+    answerScanAutoStarted = false;
+    signalCode = "";
+    signalStatus = "";
+    signalError = "";
+    signalExpiresInMs = 0;
   }
 
   onDestroy(() => {
     stopAnswerScanner();
+    stopSignalCountdown();
     session?.close();
   });
+
+  $: if (
+    (step === "offer-ready" || step === "entering-answer") &&
+    !answerScannerActive &&
+    !answerToken.trim() &&
+    !answerScanAutoStarted
+  ) {
+    answerScanAutoStarted = true;
+    void startAnswerScanner();
+  }
 
   function formatBytes(bytes) {
     if (bytes < 1024) return `${bytes} B`;
@@ -241,6 +360,13 @@
   function getTransportLabel(info) {
     if (!info) return "Detecting route";
     return info.protocol ? `${info.label} · ${info.protocol}` : info.label;
+  }
+
+  function formatCodeTtl(ms) {
+    const total = Math.max(0, Math.round(ms / 1000));
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
   }
 </script>
 
@@ -296,6 +422,19 @@
         <h4>Share offer with receiver</h4>
         <span class="step-badge">Step 1 of 2</span>
       </header>
+      <div class="code-box">
+        <div>
+          <p class="code-label">Quick Connect Code</p>
+          <p class="code-value">{signalCode || "......"}</p>
+        </div>
+        <button class="secondary" type="button" on:click={setupShortCodeFlow} disabled={step === "connecting"}>Refresh Code</button>
+      </div>
+      {#if signalStatus}
+        <p class="muted">{signalStatus}{signalExpiresInMs > 0 ? ` · expires in ${formatCodeTtl(signalExpiresInMs)}` : ""}</p>
+      {/if}
+      {#if signalError}
+        <p class="error-msg">{signalError}</p>
+      {/if}
       <p class="muted">Show the QR code or copy the text token. The receiver scans or pastes it to generate an answer.</p>
 
       <div class="qr-wrap">
@@ -324,6 +463,14 @@
         {:else}
           <button class="secondary" type="button" on:click={stopAnswerScanner}>Stop Camera</button>
         {/if}
+        <button class="secondary" type="button" on:click={() => answerImageInputEl?.click()}>Scan Image</button>
+        <input
+          bind:this={answerImageInputEl}
+          class="scan-file-input"
+          type="file"
+          accept="image/*"
+          on:change={onAnswerImagePicked}
+        />
       </div>
 
       {#if answerScannerActive}
@@ -459,6 +606,34 @@
     white-space: nowrap;
   }
 
+  .code-box {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 10px;
+    padding: 0.55rem 0.65rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+    background: var(--md-sys-color-surface-container);
+  }
+
+  .code-label {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--md-sys-color-on-surface-variant);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .code-value {
+    margin: 0.1rem 0 0;
+    font-family: "Roboto Mono", monospace;
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+  }
+
   .muted {
     margin: 0;
     color: var(--md-sys-color-on-surface-variant);
@@ -546,6 +721,11 @@
   .scan-actions {
     display: flex;
     gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  .scan-file-input {
+    display: none;
   }
 
   .scanner-wrap {

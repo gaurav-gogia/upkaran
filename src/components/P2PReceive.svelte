@@ -2,6 +2,8 @@
   import { onDestroy, tick } from "svelte";
   import { createEventDispatcher } from "svelte";
   import { P2PSession, validateToken } from "../js/p2p.js";
+  import { decodeQrFromImageFile } from "../js/qr-image.js";
+  import { joinSignalCode, normalizeSignalCode, publishSignalAnswer } from "../js/signal-api.js";
 
   const dispatch = createEventDispatcher();
 
@@ -29,8 +31,14 @@
   let offerScannerActive = false;
   let videoEl = null;
   let scanCanvas = null;
+  let offerImageInputEl = null;
   let scanAnimId = null;
   let jsQRLib = null;
+  let offerScanAutoStarted = false;
+  let joinCode = "";
+  let joinBusy = false;
+  let joinError = "";
+  let activeSignalCode = "";
 
   // ── QR helpers ────────────────────────────────────────────────────────────
 
@@ -55,7 +63,8 @@
 
   // ── Offer input (text) ────────────────────────────────────────────────────
 
-  async function submitOffer() {
+  async function submitOffer(options = {}) {
+    const autoPublishCode = `${options.autoPublishCode || ""}`.trim();
     const token = offerToken.trim();
     if (!validateToken(token)) {
       offerError = "Invalid offer token. Scan or paste the token from the sender.";
@@ -94,9 +103,15 @@
     try {
       await session.receiveOffer(token);
       answerToken = await session.createAnswer();
-      step = "answer-ready";
-      await tick();
-      if (answerQrCanvas) await renderQr(answerQrCanvas, answerToken);
+
+      if (autoPublishCode) {
+        await publishSignalAnswer(autoPublishCode, answerToken);
+      } else {
+        step = "answer-ready";
+        await tick();
+        if (answerQrCanvas) await renderQr(answerQrCanvas, answerToken);
+      }
+
       // Now wait for sender to complete the handshake
       step = "connecting";
       await session.waitForChannelOpen();
@@ -110,6 +125,7 @@
   // ── QR scanner for offer ──────────────────────────────────────────────────
 
   async function startOfferScanner() {
+    if (offerScannerActive) return;
     offerScannerActive = true;
     await tick();
     await loadJsQr();
@@ -117,6 +133,7 @@
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
       videoEl.srcObject = stream;
       await videoEl.play();
+      syncScanCanvasSize();
       scanOfferLoop();
     } catch {
       offerError = "Camera access denied. Paste the token manually.";
@@ -124,14 +141,31 @@
     }
   }
 
+  function syncScanCanvasSize() {
+    if (!videoEl || !scanCanvas) return;
+    const vw = videoEl.videoWidth || 0;
+    const vh = videoEl.videoHeight || 0;
+    if (!vw || !vh) return;
+    // Use camera-native dimensions for dense QR payloads.
+    if (scanCanvas.width !== vw || scanCanvas.height !== vh) {
+      scanCanvas.width = vw;
+      scanCanvas.height = vh;
+    }
+  }
+
   function scanOfferLoop() {
     if (!offerScannerActive) return;
+    syncScanCanvasSize();
+    if (!scanCanvas?.width || !scanCanvas?.height) {
+      scanAnimId = requestAnimationFrame(scanOfferLoop);
+      return;
+    }
     const ctx = scanCanvas.getContext("2d");
     const w = scanCanvas.width;
     const h = scanCanvas.height;
     ctx.drawImage(videoEl, 0, 0, w, h);
     const imgData = ctx.getImageData(0, 0, w, h);
-    const code = jsQRLib(imgData.data, imgData.width, imgData.height, { inversionAttempts: "dontInvert" });
+    const code = jsQRLib(imgData.data, imgData.width, imgData.height, { inversionAttempts: "attemptBoth" });
     if (code?.data) {
       offerToken = code.data;
       stopOfferScanner();
@@ -147,6 +181,51 @@
     if (videoEl?.srcObject) {
       videoEl.srcObject.getTracks().forEach((t) => t.stop());
       videoEl.srcObject = null;
+    }
+  }
+
+  async function onOfferImagePicked(event) {
+    const file = event?.target?.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    offerError = "";
+    try {
+      const token = await decodeQrFromImageFile(file);
+      if (!token) {
+        offerError = "No QR code found in selected image.";
+        return;
+      }
+      offerToken = token;
+      stopOfferScanner();
+      void submitOffer();
+    } catch {
+      offerError = "Could not read QR from image. Try another screenshot or camera scan.";
+    }
+  }
+
+  async function joinWithCode() {
+    const code = normalizeSignalCode(joinCode);
+    joinCode = code;
+    if (!/^\d{6}$/.test(code)) {
+      joinError = "Enter a 6-digit code.";
+      return;
+    }
+
+    joinError = "";
+    offerError = "";
+    joinBusy = true;
+
+    try {
+      const joined = await joinSignalCode(code);
+      activeSignalCode = code;
+      offerToken = joined.offerToken;
+      stopOfferScanner();
+      await submitOffer({ autoPublishCode: code });
+    } catch (err) {
+      joinError = err?.message || "Could not join with this code.";
+    } finally {
+      joinBusy = false;
     }
   }
 
@@ -185,12 +264,27 @@
     progressSize = 0;
     transportInfo = null;
     receivedFiles = [];
+    offerScanAutoStarted = false;
+    joinCode = "";
+    joinBusy = false;
+    joinError = "";
+    activeSignalCode = "";
   }
 
   onDestroy(() => {
     stopOfferScanner();
     session?.close();
   });
+
+  $: if (
+    step === "idle" &&
+    !offerScannerActive &&
+    !offerToken.trim() &&
+    !offerScanAutoStarted
+  ) {
+    offerScanAutoStarted = true;
+    void startOfferScanner();
+  }
 
   function formatBytes(bytes) {
     if (bytes < 1024) return `${bytes} B`;
@@ -215,12 +309,42 @@
       </header>
       <p class="muted">Scan the sender's QR code, or paste their offer token below.</p>
 
+      <div class="code-join-box">
+        <div>
+          <p class="code-label">Quick Connect Code</p>
+          <input
+            class="code-input"
+            type="text"
+            inputmode="numeric"
+            maxlength="6"
+            placeholder="123456"
+            value={joinCode}
+            on:input={(event) => (joinCode = normalizeSignalCode(event.currentTarget.value))}
+            disabled={step === "generating-answer" || joinBusy}
+          />
+        </div>
+        <button class="secondary" type="button" on:click={joinWithCode} disabled={step === "generating-answer" || joinBusy || joinCode.length !== 6}>
+          {joinBusy ? "Joining…" : "Join Code"}
+        </button>
+      </div>
+      {#if joinError}
+        <p class="error-msg">{joinError}</p>
+      {/if}
+
       <div class="scan-actions">
         {#if !offerScannerActive}
           <button class="secondary" type="button" on:click={startOfferScanner} disabled={step === "generating-answer"}>Scan QR</button>
         {:else}
           <button class="secondary" type="button" on:click={stopOfferScanner}>Stop Camera</button>
         {/if}
+        <button class="secondary" type="button" on:click={() => offerImageInputEl?.click()} disabled={step === "generating-answer"}>Scan Image</button>
+        <input
+          bind:this={offerImageInputEl}
+          class="scan-file-input"
+          type="file"
+          accept="image/*"
+          on:change={onOfferImagePicked}
+        />
       </div>
 
       {#if offerScannerActive}
@@ -273,6 +397,9 @@
         <h4>Share your answer with sender</h4>
         <span class="step-badge">Step 2 of 2</span>
       </header>
+      {#if activeSignalCode}
+        <p class="muted">Answer published using code {activeSignalCode}. Sender will connect automatically.</p>
+      {/if}
       <p class="muted">Show the sender this QR code or send them the text token. Once they enter it, transfer will begin automatically.</p>
 
       <div class="qr-wrap">
@@ -415,6 +542,41 @@
   .scan-actions {
     display: flex;
     gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  .code-join-box {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 10px;
+    padding: 0.55rem 0.65rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: end;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+    background: var(--md-sys-color-surface-container);
+  }
+
+  .code-label {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--md-sys-color-on-surface-variant);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .code-input {
+    margin-top: 0.2rem;
+    width: 150px;
+    font-family: "Roboto Mono", monospace;
+    letter-spacing: 0.22em;
+    text-align: center;
+    font-size: 1rem;
+    font-weight: 700;
+  }
+
+  .scan-file-input {
+    display: none;
   }
 
   .scanner-wrap {

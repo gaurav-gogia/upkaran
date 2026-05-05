@@ -6,6 +6,13 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 export default defineConfig({
   plugins: [svelte(), cloudflare()],
   build: {
+    // pdf.worker and HEIC codec bundles are large by nature; keep warnings meaningful.
+    chunkSizeWarningLimit: 2500,
+    rolldownOptions: {
+      output: {
+        codeSplitting: true
+      }
+    },
     rollupOptions: {
       output: {
         manualChunks(id) {
