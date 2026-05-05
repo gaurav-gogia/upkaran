@@ -10,16 +10,16 @@
         "build:wasm": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-wasm.ps1"
     },
     "devDependencies": {
-        "@sveltejs/vite-plugin-svelte": "^3.1.2",
-        "svelte": "^4.2.18",
-        "vite": "^5.4.21"
+        "@sveltejs/vite-plugin-svelte": "*",
+        "svelte": "*",
+        "vite": "*"
     },
     "dependencies": {
-        "fflate": "^0.8.2",
-        "heic2any": "^0.0.4",
-        "jsqr": "^1.4.0",
-        "pdf-lib": "^1.17.1",
-        "pdfjs-dist": "^4.6.82",
-        "qrcode": "^1.5.4"
+        "fflate": "*",
+        "heic2any": "*",
+        "jsqr": "*",
+        "pdf-lib": "*",
+        "pdfjs-dist": "*",
+        "qrcode": "*"
     }
 }

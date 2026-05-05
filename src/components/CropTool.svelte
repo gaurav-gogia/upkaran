@@ -44,7 +44,7 @@
     loadedFileKey = "";
   }
 
-  $: if (sourceCanvas && stage) {
+  $: if (sourceCanvas && stage && zoom) {
     drawStage();
   }
 
@@ -370,12 +370,55 @@
 
   function updateZoom(delta) {
     zoom = clamp(Math.round((zoom + delta) * 10) / 10, 0.5, 3);
+    drawStage();
   }
 
   function onWheel(event) {
     if (busy || !sourceCanvas) return;
     const delta = event.deltaY > 0 ? -0.1 : 0.1;
     updateZoom(delta);
+  }
+
+  // ── Pinch-to-zoom ────────────────────────────────────────────────────────────
+  const activePointers = new Map(); // pointerId -> { x, y }
+  let pinchStartDist = 0;
+  let pinchStartZoom = 1;
+
+  function pointerDist(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  function onPointerDownPinch(event) {
+    activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (activePointers.size === 2) {
+      const [a, b] = activePointers.values();
+      pinchStartDist = pointerDist(a, b);
+      pinchStartZoom = zoom;
+      // Cancel any drag in progress when second finger lands
+      dragMode = "";
+      dragStart = null;
+    }
+  }
+
+  function onPointerMovePinch(event) {
+    if (!activePointers.has(event.pointerId)) return;
+    activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (activePointers.size === 2) {
+      const [a, b] = activePointers.values();
+      const dist = pointerDist(a, b);
+      if (pinchStartDist > 0) {
+        const scale = dist / pinchStartDist;
+        zoom = clamp(Math.round(pinchStartZoom * scale * 10) / 10, 0.5, 3);
+        drawStage();
+      }
+    }
+  }
+
+  function onPointerUpPinch(event) {
+    activePointers.delete(event.pointerId);
+    if (activePointers.size < 2) {
+      pinchStartDist = 0;
+    }
   }
 
   function onKeydown(event) {
@@ -407,14 +450,23 @@
       }
     });
   }
+
+  let collapsed = false;
 </script>
 
 <section class="crop-tool panel">
-  <header>
+  <button
+    class="crop-header"
+    type="button"
+    aria-expanded={!collapsed}
+    on:click={() => (collapsed = !collapsed)}
+  >
     <h4>Crop</h4>
-    <span>{files.length} selected image(s)</span>
-  </header>
+    <span class="file-count">{files.length} selected image(s)</span>
+    <span class="chevron" class:rotated={collapsed} aria-hidden="true">&#8964;</span>
+  </button>
 
+  {#if !collapsed}
   {#if loadError}
     <p class="error-text">{loadError}</p>
   {:else if !ready}
@@ -448,10 +500,10 @@
       <canvas
         bind:this={stage}
         tabindex={busy ? -1 : 0}
-        on:pointerdown={onPointerDown}
-        on:pointermove={onPointerMove}
-        on:pointerup={onPointerUp}
-        on:pointercancel={onPointerUp}
+        on:pointerdown={(e) => { onPointerDownPinch(e); onPointerDown(e); }}
+        on:pointermove={(e) => { onPointerMovePinch(e); if (activePointers.size < 2) onPointerMove(e); }}
+        on:pointerup={(e) => { onPointerUpPinch(e); onPointerUp(e); }}
+        on:pointercancel={(e) => { onPointerUpPinch(e); onPointerUp(e); }}
         on:pointerenter={updateHoverCursor}
         on:pointerleave={() => applyCursor("")}
         on:wheel|preventDefault={onWheel}
@@ -467,6 +519,7 @@
 
     <button type="button" on:click={applyCrop} disabled={busy || files.length < 1}>Apply Crop to {files.length} Image(s)</button>
   {/if}
+  {/if}
 </section>
 
 <style>
@@ -475,25 +528,42 @@
     padding: 1rem;
   }
 
-  header {
+  .crop-header {
     display: flex;
-    justify-content: space-between;
     align-items: baseline;
     gap: 0.5rem;
-    margin-bottom: 0.8rem;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0 0 0.8rem;
+    cursor: pointer;
+    text-align: left;
     flex-wrap: wrap;
+    box-shadow: none;
   }
 
-  h4,
-  h5 {
-    margin: 0;
-    font-weight: 500;
+  .crop-header:hover {
+    background: none;
+    box-shadow: none;
   }
 
-  header span,
-  .hint {
+  .file-count {
     color: var(--md-sys-color-on-surface-variant);
-    margin: 0;
+    flex: 1;
+    font-size: 0.9rem;
+  }
+
+  .chevron {
+    font-size: 1.1rem;
+    line-height: 1;
+    display: inline-block;
+    transition: transform 0.2s;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .chevron.rotated {
+    transform: rotate(-90deg);
   }
 
   .controls {
@@ -504,7 +574,16 @@
     margin-bottom: 0.8rem;
   }
 
-  .controls label,
+  h4,
+  h5 {
+    margin: 0;
+    font-weight: 500;
+  }
+
+  .hint {
+    color: var(--md-sys-color-on-surface-variant);
+    margin: 0;
+  }
   .controls span {
     font-size: 0.85rem;
   }

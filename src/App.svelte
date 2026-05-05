@@ -4,6 +4,10 @@
   import FileList from "./components/FileList.svelte";
   import Toolbar from "./components/Toolbar.svelte";
   import ResultsDrawer from "./components/ResultsDrawer.svelte";
+  import PdfTools from "./components/PdfTools.svelte";
+  import ImageTools from "./components/ImageTools.svelte";
+  import FileTools from "./components/FileTools.svelte";
+  import P2PTransfer from "./components/P2PTransfer.svelte";
   import { resolveRouteFromSelection, resolveRoute, ROUTES } from "./routes/router.js";
   import { enrichFiles } from "./js/detect.js";
   import { addResults, clearResults } from "./js/results-store.js";
@@ -23,14 +27,6 @@
   let progress = 0;
   let error = "";
 
-  let PdfToolsComponent = null;
-  let ImageToolsComponent = null;
-  let FileToolsComponent = null;
-  let P2PTransferComponent = null;
-  let loadPdfPromise = null;
-  let loadImagePromise = null;
-  let loadFilePromise = null;
-  let loadP2PPromise = null;
   let dropzoneRef;
   let pickerAccept = "";
   let featureOverviewCollapsed = false;
@@ -121,86 +117,12 @@
     modalSelectedIds = [];
   }
 
-  $: if (route === ROUTES.PDF) {
-    void ensurePdfToolsLoaded();
-  }
-
-  $: if (route === ROUTES.IMAGE) {
-    void ensureImageToolsLoaded();
-  }
-
-  $: if (route === ROUTES.FILE) {
-    void ensureFileToolsLoaded();
-  }
-
-  async function ensurePdfToolsLoaded() {
-    if (PdfToolsComponent) return PdfToolsComponent;
-    if (!loadPdfPromise) {
-      loadPdfPromise = import("./components/PdfTools.svelte")
-        .then((module) => {
-          PdfToolsComponent = module.default;
-          return PdfToolsComponent;
-        })
-        .finally(() => {
-          loadPdfPromise = null;
-        });
-    }
-    return loadPdfPromise;
-  }
-
-  async function ensureImageToolsLoaded() {
-    if (ImageToolsComponent) return ImageToolsComponent;
-    if (!loadImagePromise) {
-      loadImagePromise = import("./components/ImageTools.svelte")
-        .then((module) => {
-          ImageToolsComponent = module.default;
-          return ImageToolsComponent;
-        })
-        .finally(() => {
-          loadImagePromise = null;
-        });
-    }
-    return loadImagePromise;
-  }
-
-  async function ensureFileToolsLoaded() {
-    if (FileToolsComponent) return FileToolsComponent;
-    if (!loadFilePromise) {
-      loadFilePromise = import("./components/FileTools.svelte")
-        .then((module) => {
-          FileToolsComponent = module.default;
-          return FileToolsComponent;
-        })
-        .finally(() => {
-          loadFilePromise = null;
-        });
-    }
-    return loadFilePromise;
-  }
-
-  async function ensureP2PLoaded() {
-    if (P2PTransferComponent) return P2PTransferComponent;
-    if (!loadP2PPromise) {
-      loadP2PPromise = import("./components/P2PTransfer.svelte")
-        .then((module) => {
-          P2PTransferComponent = module.default;
-          return P2PTransferComponent;
-        })
-        .finally(() => {
-          loadP2PPromise = null;
-        });
-    }
-    return loadP2PPromise;
-  }
-
   function toggleP2P() {
     p2pOpen = !p2pOpen;
-    if (p2pOpen) void ensureP2PLoaded();
   }
 
   function openP2PFromCard() {
     p2pOpen = true;
-    void ensureP2PLoaded();
   }
 
   function onFilesAdded(files) {
@@ -277,6 +199,41 @@
     clearResults();
   }
 
+  async function resetApp() {
+    // Unregister all service workers
+    if ("serviceWorker" in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((r) => r.unregister()));
+    }
+
+    // Delete all Cache API caches
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+
+    // Clear Web Storage
+    try { localStorage.clear(); } catch { /* ignore */ }
+    try { sessionStorage.clear(); } catch { /* ignore */ }
+
+    // Delete all IndexedDB databases
+    if (indexedDB.databases) {
+      const dbs = await indexedDB.databases();
+      await Promise.all(dbs.map((db) => new Promise((resolve) => {
+        const req = indexedDB.deleteDatabase(db.name);
+        req.onsuccess = resolve;
+        req.onerror = resolve;
+        req.onblocked = resolve;
+      })));
+    }
+
+    // Clear in-memory state last
+    clearAll();
+
+    // Reload to a clean slate
+    window.location.reload();
+  }
+
   function onProgress(event) {
     progress = event.detail;
   }
@@ -302,7 +259,7 @@
     </button>
   </header>
 
-  <Toolbar route={route} processing={processing} on:clear={clearAll} />
+  <Toolbar route={route} processing={processing} on:clear={clearAll} on:reset={resetApp} />
 
   <Dropzone bind:this={dropzoneRef} accept={pickerAccept} on:filesadded={(event) => onFilesAdded(event.detail)} />
 
@@ -345,17 +302,7 @@
 
   {#if p2pOpen}
     <div transition:fade>
-      {#if P2PTransferComponent}
-        <svelte:component
-          this={P2PTransferComponent}
-          {entries}
-          on:filesreceived={onP2PFilesReceived}
-        />
-      {:else}
-        <section class="panel loading-tool" transition:fade>
-          <p>Loading P2P Transfer…</p>
-        </section>
-      {/if}
+      <P2PTransfer {entries} on:filesreceived={onP2PFilesReceived} />
     </div>
   {/if}
 
@@ -363,63 +310,42 @@
     <FileList files={entries} busy={processing} on:selectionchange={onFileSelectionChange} on:fileschange={onFilesChange} />
 
     {#if route === ROUTES.PDF}
-      {#if PdfToolsComponent}
-        <svelte:component
-          this={PdfToolsComponent}
-          files={effectivePdfFiles}
-          busy={processing}
-          on:processing={(event) => (processing = event.detail)}
-          on:progress={onProgress}
-          on:error={onError}
-          on:output={onOutput}
-        />
-      {:else}
-        <section class="panel loading-tool" transition:fade>
-          <p>Loading PDF tools...</p>
-        </section>
-      {/if}
+      <PdfTools
+        files={effectivePdfFiles}
+        busy={processing}
+        on:processing={(event) => (processing = event.detail)}
+        on:progress={onProgress}
+        on:error={onError}
+        on:output={onOutput}
+      />
     {/if}
 
     {#if route === ROUTES.IMAGE}
-      {#if ImageToolsComponent}
-        <svelte:component
-          this={ImageToolsComponent}
-          files={effectiveImageFiles}
-          busy={processing}
-          on:processing={(event) => (processing = event.detail)}
-          on:progress={onProgress}
-          on:error={onError}
-          on:output={onOutput}
-        />
-      {:else}
-        <section class="panel loading-tool" transition:fade>
-          <p>Loading image tools...</p>
-        </section>
-      {/if}
+      <ImageTools
+        files={effectiveImageFiles}
+        busy={processing}
+        on:processing={(event) => (processing = event.detail)}
+        on:progress={onProgress}
+        on:error={onError}
+        on:output={onOutput}
+      />
     {/if}
 
     {#if route === ROUTES.FILE}
-      {#if FileToolsComponent}
-        <svelte:component
-          this={FileToolsComponent}
-          files={effectiveFiles}
-          busy={processing}
-          on:processing={(event) => (processing = event.detail)}
-          on:progress={onProgress}
-          on:error={onError}
-          on:output={onOutput}
-        />
-      {:else}
-        <section class="panel loading-tool" transition:fade>
-          <p>Loading file tools...</p>
-        </section>
-      {/if}
+      <FileTools
+        files={effectiveFiles}
+        busy={processing}
+        on:processing={(event) => (processing = event.detail)}
+        on:progress={onProgress}
+        on:error={onError}
+        on:output={onOutput}
+      />
     {/if}
   </div>
 
   {#if mixedModalOpen}
     <div class="modal-backdrop" transition:fade>
-      <section class="panel modal" role="dialog" aria-modal="true" aria-label="Choose files for operation">
+      <div class="panel modal" role="dialog" aria-modal="true" aria-label="Choose files for operation">
         <h3>Mixed file selection</h3>
         <p>Select the files to operate on. Choose one file type per operation.</p>
 
@@ -447,7 +373,7 @@
           <button class="secondary" type="button" on:click={() => (modalSelectedIds = [])}>Reset</button>
           <button type="button" on:click={applyModalSelection}>Apply</button>
         </div>
-      </section>
+      </div>
     </div>
   {/if}
 
@@ -582,19 +508,6 @@
   .card-cta {
     margin-top: 0.6rem;
     width: 100%;
-  }
-
-  .content-grid > * {
-    min-width: 0;
-  }
-
-  .loading-tool {
-    padding: 1rem;
-  }
-
-  .loading-tool p {
-    margin: 0;
-    color: var(--md-sys-color-on-surface-variant);
   }
 
   .modal-backdrop {
