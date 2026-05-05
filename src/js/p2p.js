@@ -11,6 +11,7 @@ const BUFFER_LOW_WATER = 256 * 1024; // resume when buffer drops to 256 KB
 const ICE_GATHERING_TIMEOUT_MS = 7000;
 const DEFAULT_ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 const TURN_CONFIG_STORAGE_KEY = "upkaran.p2p.turnConfig";
+const SDP_DEBUG_STORAGE_KEY = "upkaran.p2p.debugSdp";
 
 function canUseStorage() {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
@@ -112,19 +113,81 @@ function fromBase64Url(text) {
 }
 
 function normalizeSdpForEncode(sdp) {
-  // SDP uses CRLF by convention, but LF is sufficient for transport and compresses better.
-  return sdp.replace(/\r\n/g, "\n").trim();
+  // Normalize all line endings (CRLF/CR/LF) to LF for compact transport.
+  return `${sdp ?? ""}`.replace(/\r\n?/g, "\n");
 }
 
 function normalizeSdpForDecode(sdp) {
-  return `${sdp}`.replace(/\r?\n/g, "\r\n");
+  // Re-expand to CRLF for RTCPeerConnection parsers.
+  return `${sdp ?? ""}`.replace(/\r\n?/g, "\n").replace(/\n/g, "\r\n");
+}
+
+function isSdpDebugEnabled() {
+  if (typeof window === "undefined") return false;
+  try {
+    if (!window.localStorage) return false;
+    const raw = window.localStorage.getItem(SDP_DEBUG_STORAGE_KEY);
+    return raw === "1" || raw === "true";
+  } catch {
+    // Access can throw in restricted/privacy contexts.
+    return false;
+  }
+}
+
+function simpleHash(text) {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function analyzeSdp(sdp) {
+  const value = `${sdp ?? ""}`;
+  const crlfCount = (value.match(/\r\n/g) || []).length;
+  const bareCrCount = (value.match(/\r(?!\n)/g) || []).length;
+  const lfCount = (value.match(/\n/g) || []).length;
+  const lfOnlyCount = lfCount - crlfCount;
+  const lines = value.split(/\r\n|\r|\n/);
+  const weirdLines = lines.filter((line) => line && !/^[a-z]=/i.test(line)).slice(0, 4);
+
+  return {
+    len: value.length,
+    hash: simpleHash(value),
+    lines: lines.length,
+    crlfCount,
+    lfOnlyCount,
+    bareCrCount,
+    weirdLinePreview: weirdLines
+  };
+}
+
+function debugSdp(stage, sdp, extra = {}) {
+  if (!isSdpDebugEnabled()) return;
+  try {
+    const stats = analyzeSdp(sdp);
+    const payload = {
+      stage,
+      ...extra,
+      ...stats
+    };
+    // Logs metadata only; full SDP is intentionally not emitted.
+    console.info("[upkaran:p2p:sdp]", payload);
+  } catch {
+    // Debug logging should never affect transfer flow.
+  }
 }
 
 export function encodeToken(obj) {
+  debugSdp("encode:input", obj.sdp, { type: obj.type });
+  const normalized = normalizeSdpForEncode(obj.sdp);
+  debugSdp("encode:normalized", normalized, { type: obj.type });
+
   const compact = {
     v: SIGNAL_VERSION,
     t: obj.type === "offer" ? "o" : "a",
-    s: normalizeSdpForEncode(obj.sdp)
+    s: normalized
   };
   const json = JSON.stringify(compact);
   const compressed = deflateSync(strToU8(json), { level: 9 });
@@ -139,17 +202,24 @@ export function decodeToken(token) {
 
   // New compact schema
   if (parsed && typeof parsed === "object" && typeof parsed.s !== "undefined" && typeof parsed.t === "string") {
+    if (parsed.t !== "o" && parsed.t !== "a") {
+      throw new Error("Invalid signaling token type.");
+    }
+    const decodedSdp = normalizeSdpForDecode(parsed.s);
+    debugSdp("decode:compact", decodedSdp, { type: parsed.t === "o" ? "offer" : "answer" });
     return {
       type: parsed.t === "o" ? "offer" : "answer",
-      sdp: normalizeSdpForDecode(parsed.s)
+      sdp: decodedSdp
     };
   }
 
   // Legacy schema compatibility
   if (parsed && typeof parsed === "object" && typeof parsed.sdp === "string" && typeof parsed.type === "string") {
+    const decodedSdp = normalizeSdpForDecode(parsed.sdp);
+    debugSdp("decode:legacy", decodedSdp, { type: parsed.type });
     return {
       type: parsed.type,
-      sdp: normalizeSdpForDecode(parsed.sdp)
+      sdp: decodedSdp
     };
   }
 
@@ -432,9 +502,15 @@ export class P2PSession {
    */
   async receiveOffer(token) {
     const signal = decodeToken(token);
+    debugSdp("setRemoteDescription:offer", signal.sdp, { type: signal.type });
     const pc = this._createPc();
     pc.ondatachannel = (event) => this._setupDataChannel(event.channel);
-    await pc.setRemoteDescription({ type: signal.type, sdp: signal.sdp });
+    try {
+      await pc.setRemoteDescription({ type: signal.type, sdp: signal.sdp });
+    } catch (err) {
+      const stats = analyzeSdp(signal.sdp);
+      throw new Error(`${err.message} [sdpHash=${stats.hash}, len=${stats.len}, lines=${stats.lines}, crlf=${stats.crlfCount}, lfOnly=${stats.lfOnlyCount}, bareCr=${stats.bareCrCount}]`);
+    }
   }
 
   /**
@@ -454,7 +530,13 @@ export class P2PSession {
    */
   async receiveAnswer(token) {
     const signal = decodeToken(token);
-    await this._pc.setRemoteDescription({ type: signal.type, sdp: signal.sdp });
+    debugSdp("setRemoteDescription:answer", signal.sdp, { type: signal.type });
+    try {
+      await this._pc.setRemoteDescription({ type: signal.type, sdp: signal.sdp });
+    } catch (err) {
+      const stats = analyzeSdp(signal.sdp);
+      throw new Error(`${err.message} [sdpHash=${stats.hash}, len=${stats.len}, lines=${stats.lines}, crlf=${stats.crlfCount}, lfOnly=${stats.lfOnlyCount}, bareCr=${stats.bareCrCount}]`);
+    }
   }
 
   /**

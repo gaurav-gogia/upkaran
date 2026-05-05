@@ -13,7 +13,7 @@ async function parseJson(response) {
 }
 
 export function normalizeSignalCode(value) {
-  return `${value ?? ""}`.replace(/\D+/g, "").slice(0, 6);
+  return `${value ?? ""}`.toUpperCase().replace(/[^A-Z0-9]+/g, "").slice(0, 8);
 }
 
 export async function createSignalCode(offerToken) {

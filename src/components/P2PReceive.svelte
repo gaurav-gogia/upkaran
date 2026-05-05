@@ -207,8 +207,8 @@
   async function joinWithCode() {
     const code = normalizeSignalCode(joinCode);
     joinCode = code;
-    if (!/^\d{6}$/.test(code)) {
-      joinError = "Enter a 6-digit code.";
+    if (!/^[A-Z0-9]{8}$/.test(code)) {
+      joinError = "Enter an 8-character code.";
       return;
     }
 
@@ -276,16 +276,6 @@
     session?.close();
   });
 
-  $: if (
-    step === "idle" &&
-    !offerScannerActive &&
-    !offerToken.trim() &&
-    !offerScanAutoStarted
-  ) {
-    offerScanAutoStarted = true;
-    void startOfferScanner();
-  }
-
   function formatBytes(bytes) {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -304,89 +294,99 @@
   {#if step === "idle" || step === "generating-answer"}
     <section class="card">
       <header>
-        <h4>Receive offer from sender</h4>
-        <span class="step-badge">Step 1 of 2</span>
+        <h4>Connect to sender</h4>
       </header>
-      <p class="muted">Scan the sender's QR code, or paste their offer token below.</p>
 
-      <div class="code-join-box">
-        <div>
-          <p class="code-label">Quick Connect Code</p>
+      <!-- Hero: code entry -->
+      <div class="code-hero-block">
+        <p class="code-hero-label">Enter the 8-character code shown on the sender's screen</p>
+        <div class="code-input-row">
           <input
-            class="code-input"
+            class="code-input-hero"
             type="text"
-            inputmode="numeric"
-            maxlength="6"
-            placeholder="123456"
+            inputmode="text"
+            maxlength="8"
+            placeholder="AB12CD34"
             value={joinCode}
             on:input={(event) => (joinCode = normalizeSignalCode(event.currentTarget.value))}
+            on:keydown={(e) => e.key === "Enter" && joinCode.length === 8 && joinWithCode()}
             disabled={step === "generating-answer" || joinBusy}
+            aria-label="Quick connect code"
+          />
+          <button
+            type="button"
+            on:click={joinWithCode}
+            disabled={step === "generating-answer" || joinBusy || joinCode.length !== 8}
+          >
+            {joinBusy ? "Joining…" : step === "generating-answer" ? "Connecting…" : "Join"}
+          </button>
+        </div>
+        {#if joinError}
+          <p class="error-msg">{joinError}</p>
+        {/if}
+      </div>
+
+      <!-- Secondary: QR / token fallback -->
+      <details class="fallback-details">
+        <summary>Scan QR or paste token instead</summary>
+
+        <div class="scan-actions">
+          {#if !offerScannerActive}
+            <button class="secondary" type="button" on:click={startOfferScanner} disabled={step === "generating-answer"}>Scan QR</button>
+          {:else}
+            <button class="secondary" type="button" on:click={stopOfferScanner}>Stop Camera</button>
+          {/if}
+          <button class="secondary" type="button" on:click={() => offerImageInputEl?.click()} disabled={step === "generating-answer"}>Scan Image</button>
+          <input
+            bind:this={offerImageInputEl}
+            class="scan-file-input"
+            type="file"
+            accept="image/*"
+            on:change={onOfferImagePicked}
           />
         </div>
-        <button class="secondary" type="button" on:click={joinWithCode} disabled={step === "generating-answer" || joinBusy || joinCode.length !== 6}>
-          {joinBusy ? "Joining…" : "Join Code"}
-        </button>
-      </div>
-      {#if joinError}
-        <p class="error-msg">{joinError}</p>
-      {/if}
 
-      <div class="scan-actions">
-        {#if !offerScannerActive}
-          <button class="secondary" type="button" on:click={startOfferScanner} disabled={step === "generating-answer"}>Scan QR</button>
-        {:else}
-          <button class="secondary" type="button" on:click={stopOfferScanner}>Stop Camera</button>
+        {#if offerScannerActive}
+          <div class="scanner-wrap">
+            <!-- svelte-ignore a11y-media-has-caption -->
+            <video bind:this={videoEl} playsinline muted class="scanner-video"></video>
+            <canvas bind:this={scanCanvas} width="320" height="240" class="scan-canvas-hidden"></canvas>
+          </div>
         {/if}
-        <button class="secondary" type="button" on:click={() => offerImageInputEl?.click()} disabled={step === "generating-answer"}>Scan Image</button>
-        <input
-          bind:this={offerImageInputEl}
-          class="scan-file-input"
-          type="file"
-          accept="image/*"
-          on:change={onOfferImagePicked}
-        />
-      </div>
 
-      {#if offerScannerActive}
-        <div class="scanner-wrap">
-          <!-- svelte-ignore a11y-media-has-caption -->
-          <video bind:this={videoEl} playsinline muted class="scanner-video"></video>
-          <canvas bind:this={scanCanvas} width="320" height="240" class="scan-canvas-hidden"></canvas>
+        <div class="token-row">
+          <textarea
+            class="token-area"
+            placeholder="Paste offer token here…"
+            bind:value={offerToken}
+            rows="3"
+            disabled={step === "generating-answer"}
+          ></textarea>
+          <button
+            class="secondary icon-btn"
+            type="button"
+            on:click={pasteOffer}
+            title="Paste from clipboard"
+            disabled={step === "generating-answer"}
+          >
+            content_paste
+          </button>
         </div>
-      {/if}
 
-      <div class="token-row">
-        <textarea
-          class="token-area"
-          placeholder="Paste offer token here…"
-          bind:value={offerToken}
-          rows="3"
-          disabled={step === "generating-answer"}
-        ></textarea>
-        <button
-          class="secondary icon-btn"
-          type="button"
-          on:click={pasteOffer}
-          title="Paste from clipboard"
-          disabled={step === "generating-answer"}
-        >
-          content_paste
-        </button>
-      </div>
+        {#if offerError}
+          <p class="error-msg">{offerError}</p>
+        {/if}
 
-      {#if offerError}
-        <p class="error-msg">{offerError}</p>
-      {/if}
-
-      <div class="actions">
-        <button
-          type="button"
-          on:click={submitOffer}
-          disabled={step === "generating-answer" || !offerToken.trim()}
-        >
-          {step === "generating-answer" ? "Generating answer…" : "Process Offer"}
-        </button>
-      </div>
+        <div class="actions">
+          <button
+            type="button"
+            on:click={submitOffer}
+            disabled={step === "generating-answer" || !offerToken.trim()}
+          >
+            {step === "generating-answer" ? "Generating answer…" : "Process Token"}
+          </button>
+        </div>
+      </details>
     </section>
   {/if}
 
@@ -557,22 +557,86 @@
     background: var(--md-sys-color-surface-container);
   }
 
+  /* Hero code entry */
+  .code-hero-block {
+    display: grid;
+    gap: 0.55rem;
+    padding: 0.75rem;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 12px;
+    background: var(--md-sys-color-surface-container);
+  }
+
+  .code-hero-label {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--md-sys-color-on-surface-variant);
+    font-weight: 500;
+  }
+
+  .code-input-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .code-input-hero {
+    font-family: "Roboto Mono", monospace;
+    letter-spacing: 0.18em;
+    text-align: center;
+    font-size: 1.5rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    width: 230px;
+    max-width: 100%;
+    border: 2px solid var(--md-sys-color-outline);
+    border-radius: 10px;
+    padding: 0.35rem 0.6rem;
+    background: var(--md-sys-color-surface);
+  }
+
+  .code-input-hero:focus {
+    outline: none;
+    border-color: var(--md-sys-color-primary);
+  }
+
+  /* Fallback collapsible */
+  .fallback-details {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 10px;
+    padding: 0.5rem 0.75rem;
+    background: var(--md-sys-color-surface-container);
+  }
+
+  .fallback-details summary {
+    cursor: pointer;
+    font-size: 0.82rem;
+    color: var(--md-sys-color-on-surface-variant);
+    list-style: none;
+    user-select: none;
+    padding: 0.1rem 0;
+  }
+
+  .fallback-details summary::before {
+    content: "▶ ";
+    font-size: 0.7em;
+  }
+
+  .fallback-details[open] summary::before {
+    content: "▼ ";
+  }
+
+  .fallback-details > :not(summary) {
+    margin-top: 0.65rem;
+  }
+
   .code-label {
     margin: 0;
     font-size: 0.72rem;
     color: var(--md-sys-color-on-surface-variant);
     text-transform: uppercase;
     letter-spacing: 0.08em;
-  }
-
-  .code-input {
-    margin-top: 0.2rem;
-    width: 150px;
-    font-family: "Roboto Mono", monospace;
-    letter-spacing: 0.22em;
-    text-align: center;
-    font-size: 1rem;
-    font-weight: 700;
   }
 
   .scan-file-input {

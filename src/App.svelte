@@ -72,7 +72,7 @@
       p2pCta: true,
       items: [
         "Browser-to-browser file bytes (no file upload server)",
-        "6-digit quick connect code + QR/token fallback",
+        "8-character quick connect code + QR/token fallback",
         "Chunked transfer with SHA-256 verify",
         "Works on the same local network"
       ]

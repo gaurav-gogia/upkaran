@@ -44,6 +44,7 @@
   let signalExpiresInMs = 0;
   let signalCountdownId = null;
   let signalRunId = 0;
+  let signalState = "idle";
 
   // ── File selection ────────────────────────────────────────────────────────
 
@@ -153,7 +154,8 @@
 
     const runId = ++signalRunId;
     signalError = "";
-    signalStatus = "Creating 6-digit code…";
+    signalStatus = "Creating quick code…";
+    signalState = "creating";
     signalCode = "";
     signalExpiresInMs = 0;
 
@@ -164,6 +166,7 @@
       signalCode = created.code;
       startSignalCountdown(created.ttlMs);
       signalStatus = "Waiting for receiver to join code…";
+      signalState = "waiting";
 
       const remoteAnswer = await pollSignalAnswer(created.code, {
         timeoutMs: Math.max(30000, Number(created.ttlMs || 120000))
@@ -172,11 +175,22 @@
 
       answerToken = remoteAnswer;
       signalStatus = "Receiver joined. Connecting…";
+      signalState = "connecting";
       await submitAnswer();
     } catch (err) {
       if (runId !== signalRunId) return;
       signalStatus = "";
-      signalError = err?.message || "Short code unavailable. Use QR/token fallback.";
+      signalState = "error";
+      const msg = err?.message || "";
+      if (err?.status === 503 || msg.includes("503") || msg.includes("binding")) {
+        signalError = "Quick code server not available in this environment. Use the QR code or token below to connect manually.";
+      } else if (err?.status === 429) {
+        signalError = "Too many code requests. Wait a moment and retry.";
+      } else if (msg.includes("expired") || msg.includes("Timed out")) {
+        signalError = "Code expired before the receiver joined. Retry to get a fresh code.";
+      } else {
+        signalError = msg || "Quick code unavailable. Use the QR code or token below to connect manually.";
+      }
     }
   }
 
@@ -333,6 +347,7 @@
     signalStatus = "";
     signalError = "";
     signalExpiresInMs = 0;
+    signalState = "idle";
   }
 
   onDestroy(() => {
@@ -340,16 +355,6 @@
     stopSignalCountdown();
     session?.close();
   });
-
-  $: if (
-    (step === "offer-ready" || step === "entering-answer") &&
-    !answerScannerActive &&
-    !answerToken.trim() &&
-    !answerScanAutoStarted
-  ) {
-    answerScanAutoStarted = true;
-    void startAnswerScanner();
-  }
 
   function formatBytes(bytes) {
     if (bytes < 1024) return `${bytes} B`;
@@ -422,38 +427,53 @@
         <h4>Share offer with receiver</h4>
         <span class="step-badge">Step 1 of 2</span>
       </header>
-      <div class="code-box">
-        <div>
+
+      <!-- Short-code status (primary path) -->
+      <div class="code-hero">
+        <div class="code-display">
           <p class="code-label">Quick Connect Code</p>
-          <p class="code-value">{signalCode || "......"}</p>
+          <p class="code-value">{signalCode || "· · · · · · · ·"}</p>
         </div>
-        <button class="secondary" type="button" on:click={setupShortCodeFlow} disabled={step === "connecting"}>Refresh Code</button>
+        {#if signalState === "creating"}
+          <p class="signal-chip creating">Generating code…</p>
+        {:else if signalState === "waiting"}
+          <p class="signal-chip waiting">Waiting for receiver{signalExpiresInMs > 0 ? ` · ${formatCodeTtl(signalExpiresInMs)}` : ""}</p>
+        {:else if signalState === "connecting"}
+          <p class="signal-chip connecting">Receiver joined · Connecting…</p>
+        {:else if signalState === "error"}
+          <p class="signal-chip error">Code unavailable</p>
+          <button class="secondary small-btn" type="button" on:click={setupShortCodeFlow}>Retry code</button>
+        {:else}
+          <button class="secondary small-btn" type="button" on:click={setupShortCodeFlow}>Generate code</button>
+        {/if}
       </div>
-      {#if signalStatus}
-        <p class="muted">{signalStatus}{signalExpiresInMs > 0 ? ` · expires in ${formatCodeTtl(signalExpiresInMs)}` : ""}</p>
-      {/if}
+
       {#if signalError}
         <p class="error-msg">{signalError}</p>
       {/if}
-      <p class="muted">Show the QR code or copy the text token. The receiver scans or pastes it to generate an answer.</p>
 
-      <div class="qr-wrap">
-        <canvas bind:this={offerQrCanvas}></canvas>
-      </div>
-
-      <div class="token-row">
-        <textarea class="token-area" readonly value={offerToken} rows="3"></textarea>
-        <button class="secondary icon-btn" type="button" on:click={() => copyToken(offerToken)} title="Copy token">
-          content_copy
-        </button>
-      </div>
+      <!-- QR + token: always visible so receiver can scan/paste -->
+      <details class="qr-details" open>
+        <summary>QR code &amp; token</summary>
+        <p class="muted">The receiver can scan this QR or paste the token if the quick code isn't available.</p>
+        <div class="qr-wrap">
+          <canvas bind:this={offerQrCanvas}></canvas>
+        </div>
+        <div class="token-row">
+          <textarea class="token-area" readonly value={offerToken} rows="3"></textarea>
+          <button class="secondary icon-btn" type="button" on:click={() => copyToken(offerToken)} title="Copy token">
+            content_copy
+          </button>
+        </div>
+      </details>
     </section>
 
-    <!-- Answer input -->
+    <!-- Answer input: only shown when short-code cannot auto-connect -->
+    {#if signalState === "error" || signalState === "idle"}
     <section class="card">
       <header>
         <h4>Enter receiver's answer</h4>
-        <span class="step-badge">Step 2 of 2</span>
+        <span class="step-badge">Manual fallback</span>
       </header>
       <p class="muted">Scan the receiver's QR code or paste their answer token below.</p>
 
@@ -520,6 +540,7 @@
         <button class="secondary" type="button" on:click={reset}>Start over</button>
       </div>
     </section>
+    {/if}
   {/if}
 
   <!-- ── Sending progress ── -->
@@ -618,6 +639,59 @@
     background: var(--md-sys-color-surface-container);
   }
 
+  .code-hero {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 12px;
+    padding: 0.85rem 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    background: var(--md-sys-color-surface-container);
+  }
+
+  .code-display {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .small-btn {
+    flex-shrink: 0;
+    font-size: 0.78rem;
+    padding: 0.25rem 0.65rem;
+    height: auto;
+  }
+
+  .qr-details {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 10px;
+    padding: 0.6rem 0.75rem;
+    background: var(--md-sys-color-surface-container);
+  }
+
+  .qr-details summary {
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--md-sys-color-on-surface-variant);
+    list-style: none;
+    user-select: none;
+  }
+
+  .qr-details summary::before {
+    content: "▶ ";
+    font-size: 0.7em;
+  }
+
+  .qr-details[open] summary::before {
+    content: "▼ ";
+  }
+
+  .qr-details > :not(summary) {
+    margin-top: 0.6rem;
+  }
+
   .code-label {
     margin: 0;
     font-size: 0.72rem;
@@ -631,7 +705,34 @@
     font-family: "Roboto Mono", monospace;
     font-size: 1.2rem;
     font-weight: 700;
-    letter-spacing: 0.22em;
+    letter-spacing: 0.14em;
+  }
+
+  .signal-chip {
+    margin: 0;
+    width: fit-content;
+    padding: 0.22rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.73rem;
+    font-weight: 600;
+    background: var(--md-sys-color-surface-container);
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .signal-chip.waiting {
+    background: color-mix(in srgb, var(--md-sys-color-secondary-container) 65%, #fff);
+    color: var(--md-sys-color-on-secondary-container);
+  }
+
+  .signal-chip.connecting,
+  .signal-chip.creating {
+    background: color-mix(in srgb, var(--md-sys-color-tertiary-container) 60%, #fff);
+    color: var(--md-sys-color-on-tertiary-container);
+  }
+
+  .signal-chip.error {
+    background: color-mix(in srgb, var(--md-sys-color-error-container) 65%, #fff);
+    color: var(--md-sys-color-on-error-container);
   }
 
   .muted {
