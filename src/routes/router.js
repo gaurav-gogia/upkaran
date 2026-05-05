@@ -5,6 +5,7 @@ export const ROUTES = {
   PDF: "pdf",
   IMAGE: "image",
   FILE: "file",
+  CONTENT: "content",
   MIXED: "mixed"
 };
 
@@ -24,6 +25,10 @@ export function resolveRoute(files) {
 
   if (summary.otherCount === files.length) {
     return ROUTES.FILE;
+  }
+
+  if (summary.contentCount === files.length) {
+    return ROUTES.CONTENT;
   }
 
   return ROUTES.MIXED;

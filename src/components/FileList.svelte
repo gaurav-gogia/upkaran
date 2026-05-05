@@ -171,6 +171,7 @@
           on:toggle={(event) => toggleItem(event.detail)}
           on:keynav={(event) => onKeyNav(event.detail)}
           on:remove={(event) => removeFile(event.detail.id)}
+          on:forensics={(event) => dispatch("forensics", event.detail)}
           on:dragstart={(event) => (draggingId = event.detail.id)}
           on:drop={(event) => reorderWithDrop(event.detail.id)}
           on:dragend={() => (draggingId = "")}

@@ -20,9 +20,16 @@
     "dependencies": {
         "fflate": "*",
         "heic2any": "*",
+        "highlight.js": "*",
+        "html2canvas": "*",
+        "js-yaml": "*",
         "jsqr": "*",
+        "katex": "*",
+        "marked": "*",
+        "mermaid": "*",
         "pdf-lib": "*",
         "pdfjs-dist": "*",
+        "plantuml-encoder": "*",
         "qrcode": "*"
     }
 }

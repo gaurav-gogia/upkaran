@@ -18,9 +18,33 @@
   let baseRoute = ROUTES.EMPTY;
   let route = ROUTES.EMPTY;
 
+  /** Which editor workspace is currently open (null | 'latex' | 'mermaid' | 'plantuml') */
+  let activeEditor = null;
+  let forensicsEntry = null;
+
   let processing = false;
   let progress = 0;
   let error = "";
+  let resultsBatch = 0;
+
+  // ── Toast system ──────────────────────────────────────────────────────
+  let toasts = [];
+  let _toastId = 0;
+  let _progressResetTimer;
+
+  function showToast({ message, type = "success", duration = 5000, action = null, actionLabel = "View" }) {
+    const id = _toastId++;
+    toasts = [...toasts, { id, message, type, action, actionLabel }];
+    setTimeout(() => dismissToast(id), duration);
+  }
+
+  function dismissToast(id) {
+    toasts = toasts.filter((t) => t.id !== id);
+  }
+
+  function scrollToResults() {
+    document.getElementById("results-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   let dropzoneRef;
   let pickerAccept = "";
@@ -40,7 +64,8 @@
         "Rotate selected pages",
         "Add page numbers",
         "Compress PDF",
-        "PDF to images"
+        "PDF to images",
+        "Unlock / remove PDF restrictions"
       ]
     },
     {
@@ -53,6 +78,19 @@
         "Interactive crop with resize handles",
         "Batch crop using normalized selection",
         "Supports common formats including HEIC"
+      ]
+    },
+    {
+      title: "Content → PDF",
+      pickerAccept: ".txt,.rtf,.md,.docx,.pptx,.xlsx,.csv,.tsv,.json,.yaml,.yml,.xml,.html,.htm,.js,.ts,.py,.go,.java,.rb,.rs,.c,.cpp,.h,.sh,.css,.sql",
+      cta: "Try Content tools",
+      items: [
+        "DOCX, PPTX, XLSX → PDF",
+        "TXT, RTF, Markdown → PDF",
+        "CSV / TSV table → PDF",
+        "JSON, YAML, XML → PDF",
+        "Source code with syntax highlighting → PDF",
+        "HTML / SVG → PDF"
       ]
     },
     {
@@ -101,6 +139,7 @@
   $: route = resolveRoute(effectiveFiles);
   $: effectivePdfFiles = effectiveFiles.filter((entry) => entry.kind === "pdf");
   $: effectiveImageFiles = effectiveFiles.filter((entry) => entry.kind === "image");
+  $: effectiveContentFiles = effectiveFiles.filter((entry) => entry.kind === "document" || entry.kind === "data" || entry.kind === "code");
 
   $: if (baseRoute === ROUTES.MIXED && modalSelectedFiles.length === 0) {
     mixedModalOpen = true;
@@ -138,6 +177,18 @@
     featureOverviewCollapsed = true;
   }
 
+  function onWorkspaceFiles(event) {
+    const newFiles = event.detail;
+    if (!newFiles || newFiles.length === 0) return;
+    const enriched = enrichFiles(newFiles);
+    entries = [...enriched, ...entries];
+    featureOverviewCollapsed = true;
+  }
+
+  function closeEditor() {
+    activeEditor = null;
+  }
+
   function openPickerFromFeature(group) {
     pickerAccept = group.pickerAccept || "";
     dropzoneRef?.openPicker();
@@ -155,6 +206,7 @@
     entries = event.detail.files;
     const valid = new Set(entries.map((entry) => entry.id));
     selectedFiles = selectedFiles.filter((entry) => valid.has(entry.id));
+    if (forensicsEntry && !valid.has(forensicsEntry.id)) forensicsEntry = null;
   }
 
   function toggleModalFile(id) {
@@ -235,10 +287,24 @@
 
   function onError(event) {
     error = event.detail;
+    showToast({ message: event.detail || "Operation failed", type: "error", duration: 7000 });
   }
 
   function onOutput(event) {
+    const items = Array.isArray(event.detail) ? event.detail : [];
     addResults(event.detail);
+    resultsBatch++;
+    const n = items.length;
+    if (n > 0) {
+      showToast({
+        message: `${n} file${n === 1 ? "" : "s"} ready`,
+        type: "success",
+        action: scrollToResults,
+        actionLabel: "View results ↓"
+      });
+    }
+    clearTimeout(_progressResetTimer);
+    _progressResetTimer = setTimeout(() => { progress = 0; }, 1400);
   }
 </script>
 
@@ -303,8 +369,90 @@
     </div>
   {/if}
 
+  <!-- ── Create: Editor workspaces ─────────────────────────────────────── -->
+  <section class="panel create-section">
+    <h2 class="create-title">Create Documents</h2>
+    <div class="create-buttons">
+      <button
+        class="create-btn {activeEditor === 'latex' ? '' : 'secondary'}"
+        type="button"
+        on:click={() => (activeEditor = activeEditor === 'latex' ? null : 'latex')}
+        aria-pressed={activeEditor === 'latex'}
+      >
+        <span class="material-symbols-outlined">functions</span>
+        LaTeX → PDF
+      </button>
+      <button
+        class="create-btn {activeEditor === 'mermaid' ? '' : 'secondary'}"
+        type="button"
+        on:click={() => (activeEditor = activeEditor === 'mermaid' ? null : 'mermaid')}
+        aria-pressed={activeEditor === 'mermaid'}
+      >
+        <span class="material-symbols-outlined">account_tree</span>
+        Mermaid → PDF
+      </button>
+      <button
+        class="create-btn {activeEditor === 'plantuml' ? '' : 'secondary'}"
+        type="button"
+        on:click={() => (activeEditor = activeEditor === 'plantuml' ? null : 'plantuml')}
+        aria-pressed={activeEditor === 'plantuml'}
+      >
+        <span class="material-symbols-outlined">schema</span>
+        PlantUML → PDF
+      </button>
+    </div>
+  </section>
+
+  {#if activeEditor === 'latex'}
+    <div transition:fade>
+      {#await import("./components/LaTeXWorkspace.svelte") then mod}
+        <svelte:component
+          this={mod.default}
+          on:filesreceived={onWorkspaceFiles}
+          on:close={closeEditor}
+        />
+      {/await}
+    </div>
+  {/if}
+
+  {#if activeEditor === 'mermaid'}
+    <div transition:fade>
+      {#await import("./components/MermaidWorkspace.svelte") then mod}
+        <svelte:component
+          this={mod.default}
+          on:filesreceived={onWorkspaceFiles}
+          on:close={closeEditor}
+        />
+      {/await}
+    </div>
+  {/if}
+
+  {#if activeEditor === 'plantuml'}
+    <div transition:fade>
+      {#await import("./components/PlantUMLWorkspace.svelte") then mod}
+        <svelte:component
+          this={mod.default}
+          on:filesreceived={onWorkspaceFiles}
+          on:close={closeEditor}
+        />
+      {/await}
+    </div>
+  {/if}
+
   <div class="content-grid">
-    <FileList files={entries} busy={processing} on:selectionchange={onFileSelectionChange} on:fileschange={onFilesChange} />
+    <FileList files={entries} busy={processing} on:selectionchange={onFileSelectionChange} on:fileschange={onFilesChange} on:forensics={(e) => { forensicsEntry = e.detail; }} />
+
+    {#if forensicsEntry}
+      {#await import("./components/ForensicsView.svelte") then mod}
+        {#key forensicsEntry.id}
+          <svelte:component
+            this={mod.default}
+            entry={forensicsEntry}
+            on:close={() => (forensicsEntry = null)}
+          />
+        {/key}
+      {/await}
+    {:else}
 
     {#if route === ROUTES.PDF}
       {#await import("./components/PdfTools.svelte") then mod}
@@ -347,6 +495,21 @@
         />
       {/await}
     {/if}
+
+    {#if route === ROUTES.CONTENT}
+      {#await import("./components/ContentTools.svelte") then mod}
+        <svelte:component
+          this={mod.default}
+          files={effectiveContentFiles}
+          busy={processing}
+          on:processing={(event) => (processing = event.detail)}
+          on:progress={onProgress}
+          on:error={onError}
+          on:output={onOutput}
+        />
+      {/await}
+    {/if}
+    {/if}
   </div>
 
   {#if mixedModalOpen}
@@ -383,25 +546,47 @@
     </div>
   {/if}
 
-  {#if processing || progress > 0}
-    <section class="panel progress" transition:fade>
-      <label for="global-progress">Progress</label>
-      <progress id="global-progress" value={progress} max="100"></progress>
-      <span>{progress}%</span>
-    </section>
-  {/if}
-
-  {#if error}
-    <section class="panel error" transition:fade>
-      <strong>Operation error</strong>
-      <p>{error}</p>
-    </section>
-  {/if}
-
   {#await import("./components/ResultsDrawer.svelte") then mod}
-    <svelte:component this={mod.default} />
+    <svelte:component this={mod.default} newBatch={resultsBatch} />
   {/await}
+
+  <!-- ── Toast stack ──────────────────────────────────────────────────────── -->
+  <div class="toast-stack" aria-live="polite" aria-atomic="false">
+    {#each toasts as toast (toast.id)}
+      <div
+        class="toast toast--{toast.type}"
+        role="status"
+        transition:fly={{ y: 28, duration: 240, easing: (t) => 1 - Math.pow(1 - t, 3) }}
+      >
+        <span class="material-symbols-outlined toast-icon">
+          {toast.type === "success" ? "check_circle" : "error"}
+        </span>
+        <span class="toast-msg">{toast.message}</span>
+        {#if toast.action}
+          <button
+            class="toast-action"
+            on:click={() => { toast.action(); dismissToast(toast.id); }}
+          >{toast.actionLabel}</button>
+        {/if}
+        <button class="toast-close" on:click={() => dismissToast(toast.id)} aria-label="Dismiss notification">
+          <span class="material-symbols-outlined" style="font-size:1.1rem">close</span>
+        </button>
+      </div>
+    {/each}
+  </div>
 </main>
+
+<!-- ── Fixed top progress bar ─────────────────────────────────────────── -->
+{#if processing || progress > 0}
+  <div class="prog-rail" aria-hidden="true" transition:fade>
+    <div
+      class="prog-fill"
+      class:is-processing={processing}
+      class:is-done={!processing && progress >= 100}
+      style="width: {progress}%"
+    ></div>
+  </div>
+{/if}
 
 <style>
   main {
@@ -593,28 +778,39 @@
     gap: 0.5rem;
   }
 
-  .progress,
-  .error {
+  /* Create section */
+  .create-section {
     padding: 0.9rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    flex-wrap: wrap;
   }
 
-  .progress label {
-    display: block;
-    margin-bottom: 0.45rem;
+  .create-title {
+    margin: 0;
+    font-size: 0.88rem;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--md-sys-color-on-surface-variant);
   }
 
-  progress {
-    width: 100%;
-    height: 0.8rem;
+  .create-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
   }
 
-  .progress span {
-    display: inline-block;
-    margin-top: 0.45rem;
+  .create-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    padding: 0.5rem 0.9rem;
   }
 
-  .error p {
-    margin: 0.4rem 0 0;
+  .create-btn .material-symbols-outlined {
+    font-size: 1.05rem;
   }
 
   @media (max-width: 740px) {
@@ -665,6 +861,147 @@
 
     .modal-actions button {
       flex: 1;
+    }
+  }
+
+  /* ── Fixed top progress bar ──────────────────────────────────────────── */
+  :global(.prog-rail) {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    z-index: 9000;
+    background: rgba(53, 92, 168, 0.12);
+  }
+
+  :global(.prog-fill) {
+    height: 100%;
+    background: var(--md-sys-color-primary);
+    transition: width 0.35s ease, background 0.4s ease;
+    border-radius: 0 2px 2px 0;
+  }
+
+  :global(.prog-fill.is-processing) {
+    background: linear-gradient(
+      90deg,
+      var(--md-sys-color-primary) 0%,
+      #7b9eff 45%,
+      var(--md-sys-color-primary) 100%
+    );
+    background-size: 250% 100%;
+    animation: prog-stripe 1.2s linear infinite;
+  }
+
+  :global(.prog-fill.is-done) {
+    background: #1e8a4a;
+    transition: width 0.2s ease, background 0.3s ease;
+  }
+
+  @keyframes prog-stripe {
+    0%   { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+  }
+
+  /* ── Toast stack ─────────────────────────────────────────────────────── */
+  .toast-stack {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    z-index: 9100;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 0.6rem;
+    pointer-events: none;
+    max-width: min(380px, calc(100vw - 2rem));
+  }
+
+  .toast {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.7rem 0.85rem 0.7rem 0.9rem;
+    border-radius: 12px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.16), 0 1px 4px rgba(0,0,0,0.08);
+    font-size: 0.88rem;
+    font-weight: 500;
+    pointer-events: all;
+    min-width: 240px;
+  }
+
+  .toast--success {
+    background: #1a1b20;
+    color: #ffffff;
+  }
+
+  .toast--error {
+    background: var(--md-sys-color-error);
+    color: #ffffff;
+  }
+
+  .toast-icon {
+    font-size: 1.2rem;
+    flex-shrink: 0;
+    line-height: 1;
+  }
+
+  .toast--success .toast-icon { color: #6be59e; }
+  .toast--error .toast-icon { color: #ffd8d6; }
+
+  .toast-msg {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .toast-action {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.35);
+    color: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0.3rem 0.65rem;
+    border-radius: 999px;
+    cursor: pointer;
+    flex-shrink: 0;
+    white-space: nowrap;
+    transition: background 0.15s;
+  }
+
+  .toast-action:hover {
+    background: rgba(255,255,255,0.15);
+    opacity: 1;
+  }
+
+  .toast-action:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  .toast-close {
+    background: transparent;
+    color: inherit;
+    padding: 0.2rem;
+    border-radius: 999px;
+    flex-shrink: 0;
+    line-height: 0;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+  }
+
+  .toast-close:hover {
+    opacity: 1;
+    background: rgba(255,255,255,0.12);
+  }
+
+  .toast-close:active:not(:disabled) {
+    transform: scale(0.94);
+  }
+
+  @media (max-width: 600px) {
+    .toast-stack {
+      bottom: 1rem;
+      right: 0.75rem;
+      left: 0.75rem;
+      max-width: none;
     }
   }
 </style>

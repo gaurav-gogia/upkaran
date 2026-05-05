@@ -13,7 +13,8 @@
     renderPdfPreviewPage,
     getPdfPageCount,
     summarizeCustomSplitSelection,
-    buildAllPagesSelection
+    buildAllPagesSelection,
+    unlockPdf
   } from "../js/pdf-tools.js";
   import { formatBytes } from "../js/detect.js";
 
@@ -49,6 +50,43 @@
   let thumbnailFileKey = "";
 
   const dispatch = createEventDispatcher();
+
+  // ── PDF Unlock state ────────────────────────────────────────────────────
+  let unlockPassword = "";
+  let unlockNeedsPassword = false;
+  let unlockError = "";
+  let unlockSuccess = "";
+  let unlocking = false;
+
+  $: if (files.length > 0) {
+    unlockNeedsPassword = false;
+    unlockError = "";
+    unlockSuccess = "";
+    unlockPassword = "";
+  }
+
+  async function runUnlock() {
+    if (unlocking || !files.length) return;
+    unlocking = true;
+    unlockError = "";
+    unlockSuccess = "";
+    try {
+      const blob = await unlockPdf(files[0], unlockPassword, (p) => dispatch("progress", p));
+      const baseName = files[0].name.replace(/\.pdf$/i, "");
+      dispatch("output", [{ name: `${baseName}-unlocked.pdf`, blob }]);
+      unlockSuccess = "PDF unlocked and added to results.";
+      unlockNeedsPassword = false;
+    } catch (e) {
+      if (e.needsPassword) {
+        unlockNeedsPassword = true;
+        unlockError = e.message;
+      } else {
+        unlockError = e.message || "Unlock failed.";
+      }
+    } finally {
+      unlocking = false;
+    }
+  }
 
   $: {
     const byId = new Map(files.map((file) => [file.id, file]));
@@ -507,6 +545,40 @@
     <button on:click={() => run("compress")} disabled={busy || files.length < 1}>Compress PDF</button>
     <button on:click={() => run("to-images")} disabled={busy || files.length < 1}>PDF to Images</button>
   </div>
+
+  <!-- PDF Unlock section -->
+  <section class="page-actions unlock-section">
+    <header>
+      <h4>Unlock PDF</h4>
+      <span>Remove passwords and restrictions</span>
+    </header>
+    <p class="unlock-desc">Removes owner restrictions (print, copy, edit locks) without a password. For user-password protected PDFs, enter the password below.</p>
+
+    {#if unlockNeedsPassword || unlockPassword}
+      <label for="pdf-unlock-password">Password</label>
+      <input
+        id="pdf-unlock-password"
+        type="password"
+        bind:value={unlockPassword}
+        placeholder="Enter PDF password"
+        disabled={unlocking}
+        on:keydown={(e) => e.key === 'Enter' && runUnlock()}
+      />
+    {/if}
+
+    {#if unlockError}
+      <p class="unlock-msg unlock-msg--error">{unlockError}</p>
+    {/if}
+    {#if unlockSuccess}
+      <p class="unlock-msg unlock-msg--success">{unlockSuccess}</p>
+    {/if}
+
+    <div class="actions">
+      <button on:click={runUnlock} disabled={busy || unlocking || files.length < 1}>
+        {unlocking ? "Unlocking…" : "Unlock PDF"}
+      </button>
+    </div>
+  </section>
 </section>
 
 <style>
@@ -859,5 +931,35 @@
     .number-grid {
       grid-template-columns: 1fr;
     }
+  }
+
+  /* Unlock section */
+  .unlock-section {
+    margin-top: 0.5rem;
+  }
+
+  .unlock-desc {
+    margin: 0 0 0.8rem;
+    font-size: 0.82rem;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .unlock-msg {
+    margin: 0 0 0.6rem;
+    font-size: 0.82rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 8px;
+  }
+
+  .unlock-msg--error {
+    color: var(--md-sys-color-error);
+    background: color-mix(in srgb, var(--md-sys-color-error) 8%, white);
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-error) 25%, white);
+  }
+
+  .unlock-msg--success {
+    color: #1a6b2f;
+    background: #edfaf1;
+    border: 1px solid #a3d9b5;
   }
 </style>

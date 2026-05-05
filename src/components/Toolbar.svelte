@@ -10,6 +10,7 @@
     pdf: "PDF tools",
     image: "Image tools",
     file: "File tools",
+    content: "Content tools",
     mixed: "Mixed files"
   };
 
@@ -27,7 +28,16 @@
 </script>
 
 <nav class="panel toolbar">
-  <p>{labels[route] ?? "Ready"}</p>
+  <div class="status-row">
+    {#if processing}
+      <span class="spinner" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </span>
+    {:else}
+      <span class="status-dot" aria-hidden="true"></span>
+    {/if}
+    <p>{labels[route] ?? "Ready"}</p>
+  </div>
   <div class="toolbar-actions">
     <button class="secondary" disabled={processing} on:click={() => dispatch("clear")}>Clear</button>
     <button class="secondary danger" disabled={processing || resetting} on:click={handleReset} title="Clear all app data, caches and service workers">
@@ -43,6 +53,46 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+  }
+
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+  }
+
+  /* Idle dot */
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #1e8a4a;
+    flex-shrink: 0;
+  }
+
+  /* 3-dot spinner */
+  .spinner {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+  }
+
+  .spinner span {
+    display: block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--md-sys-color-primary);
+    animation: spin-bounce 1s ease-in-out infinite;
+  }
+
+  .spinner span:nth-child(2) { animation-delay: 0.15s; }
+  .spinner span:nth-child(3) { animation-delay: 0.3s; }
+
+  @keyframes spin-bounce {
+    0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+    40%           { transform: scale(1);   opacity: 1;   }
   }
 
   .toolbar-actions {

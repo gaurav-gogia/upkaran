@@ -104,7 +104,19 @@
   </div>
 
   <button
-    class="icon-button"
+    class="inspect-btn"
+    type="button"
+    aria-label={`Inspect ${item.name}`}
+    title="File forensics"
+    disabled={busy}
+    on:click|stopPropagation={() => dispatch("forensics", item)}
+  >
+    <span class="material-symbols-outlined">search</span>
+    <span class="inspect-label">Inspect</span>
+  </button>
+
+  <button
+    class="icon-button remove-btn"
     type="button"
     aria-label={`Remove ${item.name}`}
     disabled={busy}
@@ -117,8 +129,8 @@
 <style>
   .file-item {
     display: grid;
-    grid-template-columns: auto auto auto minmax(0, 1fr) auto auto;
-    grid-template-areas: "check drag icon meta trailing remove";
+    grid-template-columns: auto auto auto minmax(0, 1fr) auto auto auto;
+    grid-template-areas: "check drag icon meta trailing inspect remove";
     align-items: center;
     gap: 0.75rem;
     padding: 0.7rem 0.8rem;
@@ -164,8 +176,48 @@
     align-items: center;
   }
 
-  .icon-button {
+  .inspect-btn {
+    grid-area: inspect;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    border: 1.5px solid var(--md-sys-color-primary);
+    background: transparent;
+    color: var(--md-sys-color-primary);
+    font-size: 0.78rem;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s;
+    line-height: 1;
+  }
+
+  .inspect-btn .material-symbols-outlined {
+    font-size: 1rem;
+    font-family: "Material Symbols Outlined", sans-serif;
+    line-height: 1;
+  }
+
+  .inspect-btn:hover:not(:disabled) {
+    background: var(--md-sys-color-primary);
+    color: var(--md-sys-color-on-primary);
+  }
+
+  .inspect-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .remove-btn {
     grid-area: remove;
+  }
+
+  @media (max-width: 520px) {
+    .inspect-label { display: none; }
+    .inspect-btn { padding: 0.3rem; }
   }
 
   .check-wrap {

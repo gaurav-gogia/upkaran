@@ -20,7 +20,13 @@ export default defineConfig({
           if (id.includes("node_modules/pdfjs-dist")) return "pdfjs";
           if (id.includes("node_modules/pdf-lib")) return "pdf-lib";
           if (id.includes("node_modules/fflate")) return "fflate";
-                    if (id.includes("node_modules/qrcode")) return "qrcode";
+          if (id.includes("node_modules/katex")) return "katex";
+          if (id.includes("node_modules/mermaid") || id.includes("node_modules/dagre") || id.includes("node_modules/d3") || id.includes("node_modules/cytoscape") || id.includes("node_modules/khroma") || id.includes("node_modules/stylis")) return "mermaid";
+          if (id.includes("node_modules/plantuml-encoder")) return "plantuml-encoder";
+          if (id.includes("node_modules/marked")) return "marked";
+          if (id.includes("node_modules/js-yaml")) return "js-yaml";
+          if (id.includes("node_modules/highlight.js")) return "highlight-js";
+          if (id.includes("node_modules/qrcode")) return "qrcode";
                     if (id.includes("node_modules/jsqr")) return "jsqr";
           if (id.includes("node_modules")) return "vendor";
           return undefined;

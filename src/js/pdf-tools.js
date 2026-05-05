@@ -422,3 +422,90 @@ export async function reorderPdfPages(entry, orderedPages, onProgress = () => {}
 
   return new Blob([await out.save()], { type: "application/pdf" });
 }
+
+// ---------------------------------------------------------------------------
+// PDF Unlocker
+// ---------------------------------------------------------------------------
+
+/**
+ * Attempt to unlock / remove restrictions from a PDF.
+ *
+ * Strategy:
+ *  1. Try pdf-lib load → if it succeeds the PDF has no user-password (only
+ *     owner restrictions at most).  Re-saving strips the encryption metadata.
+ *  2. If pdf-lib throws (user-password protected), fall through to pdfjs which
+ *     can decrypt with a supplied password.  Each page is rendered to Canvas
+ *     and embedded as a PNG image in a new, unrestricted pdf-lib PDF.
+ *
+ * @param {import("../js/detect.js").EnrichedFile} entry
+ * @param {string} [password=""]  User password (leave empty to try without)
+ * @param {(n: number) => void}   [onProgress]
+ * @returns {Promise<Blob>}  Unlocked PDF blob
+ */
+export async function unlockPdf(entry, password = "", onProgress = () => {}) {
+  const bytes = await entry.file.arrayBuffer();
+
+  // ── Strategy 1: pdf-lib (owner-restricted or unprotected) ──────────────
+  try {
+    const doc = await PDFDocument.load(bytes);
+    onProgress(90);
+    const out = await doc.save();
+    onProgress(100);
+    return new Blob([out], { type: "application/pdf" });
+  } catch (e) {
+    // If pdf-lib fails for any reason other than password protection,
+    // still try the pdfjs path, which is more permissive.
+  }
+
+  // ── Strategy 2: pdfjs with password → render → re-create ───────────────
+  const { getDocument } = await getPdfRuntime();
+  onProgress(5);
+
+  const loadOptions = { data: new Uint8Array(bytes) };
+  if (password) loadOptions.password = password;
+
+  let pdf;
+  try {
+    pdf = await getDocument(loadOptions).promise;
+  } catch (e) {
+    if (e && e.name === "PasswordException") {
+      if (!password) {
+        throw Object.assign(new Error("This PDF is password-protected. Enter the password to unlock it."), { needsPassword: true });
+      }
+      throw new Error("Incorrect password. Please try again.");
+    }
+    throw new Error(`Could not open PDF: ${e?.message ?? e}`);
+  }
+
+  const newDoc = await PDFDocument.create();
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    onProgress(Math.round(5 + (pageNum / pdf.numPages) * 85));
+
+    const page = await pdf.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    const ctx = canvas.getContext("2d", { alpha: false, colorSpace: "srgb" });
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    const pngDataUrl = canvas.toDataURL("image/png");
+    const pngResponse = await fetch(pngDataUrl);
+    const pngBytes = await pngResponse.arrayBuffer();
+    const pngImage = await newDoc.embedPng(pngBytes);
+
+    // Logical page size = half of the 2× canvas (original viewport)
+    const logW = viewport.width / 2;
+    const logH = viewport.height / 2;
+    const newPage = newDoc.addPage([logW, logH]);
+    newPage.drawImage(pngImage, { x: 0, y: 0, width: logW, height: logH });
+  }
+
+  onProgress(95);
+  const out = await newDoc.save();
+  onProgress(100);
+  return new Blob([out], { type: "application/pdf" });
+}

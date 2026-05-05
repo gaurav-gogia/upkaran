@@ -67,7 +67,41 @@ button {
   font-size: 0.88rem;
   font-weight: 500;
   cursor: pointer;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+  position: relative;
+  overflow: hidden;
+  /* ripple layer */
+}
+
+button::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+
+button:hover::after {
+  opacity: 0.08;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.96);
+  transition: transform 0.06s ease;
+}
+
+button:active:not(:disabled)::after {
+  opacity: 0.18;
+  transition: none;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 3px;
+  opacity: 1;
 }
 
 button:hover {
@@ -82,6 +116,10 @@ button:disabled {
 button.secondary {
   background: var(--md-sys-color-surface-variant);
   color: var(--md-sys-color-on-surface);
+}
+
+button.secondary:focus-visible {
+  outline-color: var(--md-sys-color-on-surface);
 }
 
 .panel {
