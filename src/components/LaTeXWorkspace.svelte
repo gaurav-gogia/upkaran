@@ -1,5 +1,5 @@
 <script>
-  import { createEventDispatcher, onDestroy } from "svelte";
+  import { createEventDispatcher, onDestroy, tick } from "svelte";
   import katex from "katex";
   import "katex/dist/katex.min.css";
   import { elementToPngBlob, pngBlobToPdf } from "../js/workspace-pdf.js";
@@ -111,7 +111,10 @@
     exporting = true;
     error = "";
     try {
-      const pngBlob = await elementToPngBlob(previewEl);
+      // Flush any debounced edits so export always captures the latest source.
+      renderLatex(source);
+      await tick();
+      const pngBlob = await elementToPngBlob(previewEl, 2, { retries: 3 });
       const pdfBlob = await pngBlobToPdf(pngBlob);
       const file = new File([pdfBlob], "latex-output.pdf", { type: "application/pdf" });
       dispatch("filesreceived", [file]);

@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from "svelte";
   import { fade, fly } from "svelte/transition";
   import Dropzone from "./components/Dropzone.svelte";
   import FileList from "./components/FileList.svelte";
@@ -46,10 +47,88 @@
     document.getElementById("results-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  function scrollToFiles() {
+    document.getElementById("files-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function notifyFilesAdded(count) {
+    if (!count || count <= 0) return;
+    showToast({
+      message: `${count} file${count === 1 ? "" : "s"} added`,
+      type: "success",
+      action: scrollToFiles,
+      actionLabel: "See files"
+    });
+  }
+
   let dropzoneRef;
   let pickerAccept = "";
   let featureOverviewCollapsed = false;
   let p2pOpen = false;
+
+  const THEME_OPTIONS = [
+    { value: "ocean", label: "Ocean" },
+    { value: "forest", label: "Forest" },
+    { value: "sunset", label: "Sunset" },
+    { value: "slate", label: "Slate" },
+    { value: "lagoon", label: "Lagoon" },
+    { value: "rosewood", label: "Rosewood" },
+    { value: "amber", label: "Amber" }
+  ];
+
+  const PREVIEW_THEME_OPTIONS = THEME_OPTIONS.slice(0, 4);
+
+  let currentTheme = "ocean";
+  let colorMode = "light";
+
+  function applyAppearance() {
+    if (typeof document === "undefined") return;
+    const root = document.documentElement;
+    root.dataset.theme = currentTheme;
+    root.dataset.mode = colorMode;
+    root.style.colorScheme = colorMode;
+
+    try {
+      localStorage.setItem("upkaran-theme", currentTheme);
+      localStorage.setItem("upkaran-color-mode", colorMode);
+    } catch {
+      // Ignore storage errors (private mode, locked storage, etc.)
+    }
+  }
+
+  function toggleColorMode() {
+    colorMode = colorMode === "dark" ? "light" : "dark";
+  }
+
+  function setTheme(theme) {
+    currentTheme = theme;
+  }
+
+  onMount(() => {
+    try {
+      const storedTheme = localStorage.getItem("upkaran-theme");
+      if (THEME_OPTIONS.some((opt) => opt.value === storedTheme)) {
+        currentTheme = storedTheme;
+      }
+
+      const storedMode = localStorage.getItem("upkaran-color-mode");
+      if (storedMode === "light" || storedMode === "dark") {
+        colorMode = storedMode;
+      } else {
+        colorMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+    } catch {
+      colorMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+
+    applyAppearance();
+  });
+
+  $: {
+    currentTheme;
+    colorMode;
+    applyAppearance();
+  }
 
   const featureGroups = [
     {
@@ -167,6 +246,7 @@
     selectedFiles = [];
     modalSelectedIds = [];
     modalError = "";
+    notifyFilesAdded(files.length);
   }
 
   function onP2PFilesReceived(event) {
@@ -175,6 +255,7 @@
     const enriched = enrichFiles(newFiles);
     entries = [...enriched, ...entries];
     featureOverviewCollapsed = true;
+    notifyFilesAdded(newFiles.length);
   }
 
   function onWorkspaceFiles(event) {
@@ -183,6 +264,7 @@
     const enriched = enrichFiles(newFiles);
     entries = [...enriched, ...entries];
     featureOverviewCollapsed = true;
+    notifyFilesAdded(newFiles.length);
   }
 
   function closeEditor() {
@@ -308,7 +390,12 @@
   }
 </script>
 
-<main>
+<main
+  class={`app-shell theme-${currentTheme} mode-${colorMode}`}
+  class:is-processing={processing}
+  class:has-error={!!error}
+  class:is-done={!processing && progress >= 100}
+>
   <header class="hero" in:fly={{ y: -12, duration: 260 }}>
     <div class="hero-text">
       <h1>Upkaran Offline Suite</h1>
@@ -319,6 +406,52 @@
       P2P Transfer
     </button>
   </header>
+
+  <section class="panel appearance-strip" aria-label="Appearance">
+    <div class="appearance-title-wrap">
+      <h2 class="appearance-title">Appearance</h2>
+      <span class="appearance-current">{THEME_OPTIONS.find((t) => t.value === currentTheme)?.label} · {colorMode}</span>
+    </div>
+
+    <div class="appearance-controls" role="group" aria-label="Appearance controls">
+      <label for="theme-select">Theme</label>
+      <select id="theme-select" bind:value={currentTheme} aria-label="Select theme">
+        {#each THEME_OPTIONS as option}
+          <option value={option.value}>{option.label}</option>
+        {/each}
+      </select>
+
+      <div class="theme-swatches" role="radiogroup" aria-label="Quick theme selection">
+        {#each PREVIEW_THEME_OPTIONS as option}
+          <button
+            class="secondary theme-swatch"
+            class:is-active={currentTheme === option.value}
+            type="button"
+            role="radio"
+            aria-checked={currentTheme === option.value}
+            aria-label={`Use ${option.label} theme`}
+            title={option.label}
+            on:click={() => setTheme(option.value)}
+          >
+            <span class="swatch-dot swatch-{option.value}" aria-hidden="true"></span>
+          </button>
+        {/each}
+      </div>
+
+      <button
+        class="secondary mode-toggle"
+        type="button"
+        on:click={toggleColorMode}
+        aria-pressed={colorMode === "dark"}
+        aria-label={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">
+          {colorMode === "dark" ? "light_mode" : "dark_mode"}
+        </span>
+        {colorMode === "dark" ? "Light mode" : "Dark mode"}
+      </button>
+    </div>
+  </section>
 
   <Toolbar route={route} processing={processing} on:clear={clearAll} on:reset={resetApp} />
 
@@ -439,7 +572,7 @@
     </div>
   {/if}
 
-  <div class="content-grid">
+  <div id="files-section" class="content-grid">
     <FileList files={entries} busy={processing} on:selectionchange={onFileSelectionChange} on:fileschange={onFilesChange} on:forensics={(e) => { forensicsEntry = e.detail; }} />
 
     {#if forensicsEntry}
@@ -550,6 +683,25 @@
     <svelte:component this={mod.default} newBatch={resultsBatch} />
   {/await}
 
+  <section
+    id="fallback-resources"
+    class="panel fallback-resources"
+    aria-labelledby="fallback-help-title"
+  >
+    <h2 id="fallback-help-title">Need a feature not available here?</h2>
+    <p>
+      If you cannot complete a task in this app, continue with trusted alternatives.
+    </p>
+    <div class="fallback-actions">
+      <a class="fallback-link" href="https://ilovepdf.com" target="_blank" rel="noopener noreferrer">
+        Open iLovePDF
+      </a>
+      <a class="fallback-link secondary-link" href="https://ihatepdf.cv" target="_blank" rel="noopener noreferrer">
+        Open iHatePDF
+      </a>
+    </div>
+  </section>
+
   <!-- ── Toast stack ──────────────────────────────────────────────────────── -->
   <div class="toast-stack" aria-live="polite" aria-atomic="false">
     {#each toasts as toast (toast.id)}
@@ -597,6 +749,54 @@
     gap: 1rem;
   }
 
+  .app-shell {
+    --theme-accent: var(--md-sys-color-primary);
+    position: relative;
+  }
+
+  .app-shell.theme-ocean {
+    --theme-accent: #355ca8;
+  }
+
+  .app-shell.theme-forest {
+    --theme-accent: #2f7a51;
+  }
+
+  .app-shell.theme-sunset {
+    --theme-accent: #b5472c;
+  }
+
+  .app-shell.theme-slate {
+    --theme-accent: #4f617e;
+  }
+
+  .app-shell::before {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    z-index: 8900;
+    background: color-mix(in srgb, var(--theme-accent) 38%, transparent);
+    transition: background 0.25s ease;
+  }
+
+  .app-shell.is-processing::before {
+    background: linear-gradient(90deg, var(--theme-accent), #7fb2ff, var(--theme-accent));
+    background-size: 220% 100%;
+    animation: app-state-flow 1.1s linear infinite;
+  }
+
+  .app-shell.has-error::before {
+    background: linear-gradient(90deg, #c12e2e, #ff7c7c, #c12e2e);
+  }
+
+  .app-shell.is-done::before {
+    background: linear-gradient(90deg, #1e8a4a, #65d493, #1e8a4a);
+  }
+
+
   .hero {
     padding: 0.4rem 0.1rem 0.6rem;
     display: flex;
@@ -621,6 +821,114 @@
     color: var(--md-sys-color-on-surface-variant);
   }
 
+  .appearance-strip {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.75rem 1rem;
+    align-items: center;
+    padding: 0.7rem 0.9rem;
+    border-left: 4px solid var(--theme-accent);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 84%, var(--theme-accent) 16%);
+  }
+
+  .appearance-title-wrap {
+    min-width: 0;
+  }
+
+  .appearance-title {
+    margin: 0;
+    font-size: 0.88rem;
+    color: var(--md-sys-color-on-surface-variant);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .appearance-current {
+    font-size: 0.82rem;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .appearance-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .appearance-controls label {
+    font-size: 0.75rem;
+    color: var(--md-sys-color-on-surface-variant);
+    font-weight: 600;
+    margin-left: 0.35rem;
+  }
+
+  .appearance-controls select {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 999px;
+    background: var(--md-sys-color-surface);
+    padding: 0.32rem 0.7rem;
+    font-size: 0.8rem;
+    min-width: 116px;
+  }
+
+  .theme-swatches {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .theme-swatch {
+    width: 1.7rem;
+    height: 1.7rem;
+    border-radius: 999px;
+    padding: 0;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    display: inline-grid;
+    place-items: center;
+    background: var(--md-sys-color-surface);
+  }
+
+  .theme-swatch.is-active {
+    border-color: var(--md-sys-color-primary);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--md-sys-color-primary) 26%, transparent);
+  }
+
+  .swatch-dot {
+    width: 0.95rem;
+    height: 0.95rem;
+    border-radius: 999px;
+    border: 1px solid rgba(0, 0, 0, 0.18);
+  }
+
+  .swatch-dot.swatch-ocean {
+    background: #355ca8;
+  }
+
+  .swatch-dot.swatch-forest {
+    background: #2f7a51;
+  }
+
+  .swatch-dot.swatch-sunset {
+    background: #b5472c;
+  }
+
+  .swatch-dot.swatch-slate {
+    background: #4f617e;
+  }
+
+  .mode-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.42rem 0.78rem;
+    font-size: 0.8rem;
+  }
+
+  .mode-toggle .material-symbols-outlined {
+    font-size: 1rem;
+  }
+
   .p2p-btn {
     display: flex;
     align-items: center;
@@ -628,6 +936,59 @@
     padding: 0.5rem 1rem;
     flex-shrink: 0;
     font-size: 0.88rem;
+  }
+
+  .fallback-resources {
+    padding: 0.9rem 1rem;
+    display: grid;
+    gap: 0.6rem;
+    scroll-margin-top: 1rem;
+  }
+
+  .fallback-resources h2 {
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  .fallback-resources p {
+    margin: 0;
+    color: var(--md-sys-color-on-surface-variant);
+    font-size: 0.9rem;
+  }
+
+  .fallback-actions {
+    display: flex;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+  }
+
+  .fallback-link {
+    text-decoration: none;
+    border-radius: 999px;
+    background: var(--md-sys-color-primary);
+    color: var(--md-sys-color-on-primary);
+    padding: 0.58rem 0.95rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: opacity 0.15s ease, transform 0.1s ease;
+  }
+
+  .fallback-link:hover {
+    opacity: 0.92;
+  }
+
+  .fallback-link:active {
+    transform: scale(0.97);
+  }
+
+  .fallback-link:focus-visible {
+    outline: 2px solid var(--md-sys-color-primary);
+    outline-offset: 3px;
+  }
+
+  .fallback-link.secondary-link {
+    background: var(--md-sys-color-surface-variant);
+    color: var(--md-sys-color-on-surface);
   }
 
   .content-grid {
@@ -814,6 +1175,42 @@
   }
 
   @media (max-width: 740px) {
+    .hero-actions {
+      width: 100%;
+      justify-items: stretch;
+    }
+
+    .appearance-strip {
+      grid-template-columns: 1fr;
+      gap: 0.55rem;
+      border-left-width: 0;
+      border-top: 3px solid var(--theme-accent);
+    }
+
+    .appearance-title-wrap {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+
+    .appearance-controls {
+      border-radius: var(--radius-md);
+      justify-content: stretch;
+    }
+
+    .appearance-controls label {
+      margin-left: 0;
+    }
+
+    .appearance-controls select,
+    .theme-swatches,
+    .mode-toggle,
+    .p2p-btn {
+      width: 100%;
+      justify-content: center;
+    }
+
     .feature-overview {
       padding: 0.85rem;
     }
@@ -902,6 +1299,12 @@
     0%   { background-position: 100% 0; }
     100% { background-position: -100% 0; }
   }
+
+  @keyframes app-state-flow {
+    0% { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+  }
+
 
   /* ── Toast stack ─────────────────────────────────────────────────────── */
   .toast-stack {

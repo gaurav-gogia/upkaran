@@ -1,6 +1,6 @@
 <script>
-  import { createEventDispatcher, onDestroy } from "svelte";
-  import { svgToPngBlob, pngBlobToPdf, parseSvgDimensions } from "../js/workspace-pdf.js";
+  import { createEventDispatcher, onDestroy, tick } from "svelte";
+  import { elementToPngBlob, pngBlobToPdf } from "../js/workspace-pdf.js";
 
   const dispatch = createEventDispatcher();
 
@@ -15,6 +15,7 @@
   let svgContent = "";
   let error = "";
   let exporting = false;
+  let previewEl;
   let debounceTimer;
   let diagramSeq = 0;
 
@@ -71,12 +72,18 @@
   }
 
   async function handleExport() {
-    if (exporting || !svgContent) return;
+    if (exporting || !svgContent || !previewEl) return;
     exporting = true;
     error = "";
     try {
-      const { width, height } = parseSvgDimensions(svgContent);
-      const pngBlob = await svgToPngBlob(svgContent, width, height);
+      // Re-render right before export to avoid racing with debounced preview updates.
+      await renderDiagram(source);
+      await tick();
+      if (!svgContent) {
+        throw new Error("diagram is not ready");
+      }
+
+      const pngBlob = await elementToPngBlob(previewEl, 2, { retries: 3 });
       const pdfBlob = await pngBlobToPdf(pngBlob);
       const file = new File([pdfBlob], "mermaid-diagram.pdf", { type: "application/pdf" });
       dispatch("filesreceived", [file]);
@@ -129,7 +136,7 @@
       <div class="pane-label">Preview</div>
       <div class="preview-scroll">
         {#if svgContent}
-          <div class="diagram-wrap">
+          <div class="diagram-wrap" bind:this={previewEl}>
             {@html svgContent}
           </div>
         {:else if !error}

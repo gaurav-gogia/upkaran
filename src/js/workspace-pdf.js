@@ -57,42 +57,53 @@ export async function svgToPngBlob(svgString, naturalWidth, naturalHeight, scale
 // ---------------------------------------------------------------------------
 
 /**
- * Serialize an HTML element to a PNG Blob via SVG foreignObject.
- * Inlines all accessible CSS so the canvas render matches the page.
+ * Capture an HTML element to a PNG Blob via html2canvas.
  *
  * Note: Custom web-fonts (e.g. KaTeX fonts) must already be loaded by the
  * browser; `document.fonts.ready` is awaited before capturing.
  */
-export async function elementToPngBlob(element, scale = 2) {
+export async function elementToPngBlob(element, scale = 2, options = {}) {
+  const { retries = 2, settleDelayMs = 60 } = options;
   await document.fonts.ready;
+  await waitForStableElement(element, settleDelayMs);
 
-  const rect = element.getBoundingClientRect();
-  const w = Math.max(Math.ceil(rect.width), 10);
-  const h = Math.max(Math.ceil(rect.height), 10);
+  const { default: html2canvas } = await import("html2canvas");
+  let lastError;
 
-  // Collect all accessible CSS rules from loaded stylesheets
-  let cssText = "";
-  for (const sheet of document.styleSheets) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      cssText += Array.from(sheet.cssRules)
-        .map((r) => r.cssText)
-        .join("\n");
-    } catch {
-      /* cross-origin sheet – skip */
+      const rect = element.getBoundingClientRect();
+      const w = Math.max(Math.ceil(element.scrollWidth || rect.width), 10);
+      const h = Math.max(Math.ceil(element.scrollHeight || rect.height), 10);
+
+      const canvas = await html2canvas(element, {
+        width: w,
+        height: h,
+        windowWidth: Math.max(w, window.innerWidth),
+        windowHeight: Math.max(h, window.innerHeight),
+        scale,
+        useCORS: false,
+        allowTaint: false,
+        backgroundColor: "#ffffff",
+        logging: false,
+        scrollX: 0,
+        scrollY: 0,
+      });
+
+      if (!canvas.width || !canvas.height) {
+        throw new Error("capture produced an empty canvas");
+      }
+
+      return canvasToBlob(canvas, "image/png");
+    } catch (err) {
+      lastError = err;
+      if (attempt < retries) {
+        await waitForStableElement(element, settleDelayMs + 40 * (attempt + 1));
+      }
     }
   }
 
-  const svgString = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
-  <defs><style>* { box-sizing: border-box; } ${cssText}</style></defs>
-  <foreignObject x="0" y="0" width="${w}" height="${h}">
-    <div xmlns="http://www.w3.org/1999/xhtml"
-         style="width:${w}px;height:${h}px;overflow:hidden;background:white;padding:0;margin:0;">
-      ${element.outerHTML}
-    </div>
-  </foreignObject>
-</svg>`;
-
-  return svgToPngBlob(svgString, w, h, scale);
+  throw lastError || new Error("Capture failed");
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +161,27 @@ function canvasToBlob(canvas, type) {
   return new Promise((resolve, reject) => {
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("canvas.toBlob returned null"))), type);
   });
+}
+
+function waitForNextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+async function waitForStableElement(element, delayMs = 60) {
+  await waitForNextFrame();
+  const rect1 = element.getBoundingClientRect();
+  await new Promise((r) => setTimeout(r, delayMs));
+  await waitForNextFrame();
+  const rect2 = element.getBoundingClientRect();
+
+  // If layout changed between checks, wait one more cycle.
+  if (
+    Math.abs(rect2.width - rect1.width) > 0.5 ||
+    Math.abs(rect2.height - rect1.height) > 0.5
+  ) {
+    await new Promise((r) => setTimeout(r, delayMs));
+    await waitForNextFrame();
+  }
 }
 
 // ---------------------------------------------------------------------------
