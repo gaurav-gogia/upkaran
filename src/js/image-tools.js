@@ -12,6 +12,14 @@ function mimeFromFormat(format) {
   }
 }
 
+function isLossyMime(type) {
+  return type === "image/jpeg" || type === "image/webp" || type === "image/avif";
+}
+
+function isLosslessMime(type) {
+  return type === "image/png";
+}
+
 const HEIC_MIME_TYPES = new Set([
   "image/heic",
   "image/heif",
@@ -104,7 +112,12 @@ async function canvasToBlob(canvas, type, quality) {
 async function exportFromCanvas(canvas, preferredTypes, quality) {
   for (const type of preferredTypes) {
     const blob = await canvasToBlob(canvas, type, quality);
-    if (blob) return blob;
+    if (!blob) continue;
+
+    // Some browsers silently fall back to PNG for unsupported output types.
+    // Treat that as a miss unless PNG was explicitly requested.
+    if (type !== "image/png" && blob.type === "image/png") continue;
+    return blob;
   }
 
   const pngBlob = await canvasToBlob(canvas, "image/png", quality);
@@ -112,9 +125,89 @@ async function exportFromCanvas(canvas, preferredTypes, quality) {
   throw new Error("Image export failed for all supported browser output formats.");
 }
 
-export async function compressImage(entry, quality = 0.8) {
+function resolveCompressionStrategy(entry, options = {}) {
+  const mode = options.mode || "balanced";
+  const sourceType = normalizeOutputType(entry?.type || "");
+
+  if (mode === "best-quality") {
+    return {
+      quality: 0.9,
+      preferredTypes: [sourceType, "image/webp", "image/jpeg", "image/avif"]
+    };
+  }
+
+  if (mode === "best-compression") {
+    return {
+      // Hard floor at 50% quality as a practical max-compression guardrail.
+      quality: 0.5,
+      preferredTypes: ["image/avif", "image/webp", "image/jpeg", sourceType, "image/png"]
+    };
+  }
+
+  if (mode === "extreme-compression") {
+    return {
+      quality: 0.25,
+      preferredTypes: ["image/avif", "image/webp", "image/jpeg", sourceType, "image/png"]
+    };
+  }
+
+  return {
+    quality: 0.75,
+    preferredTypes: ["image/webp", "image/avif", "image/jpeg", sourceType, "image/png"]
+  };
+}
+
+export function getCompressionRecommendation(entry) {
+  const sourceType = normalizeOutputType(entry?.type || "");
+
+  if (isLosslessMime(sourceType)) {
+    return {
+      format: "jpeg",
+      reason: "JPEG is recommended for broad compatibility across apps and devices. WebP/AVIF may produce even smaller files when compatibility is not a concern."
+    };
+  }
+
+  if (sourceType === "image/jpeg") {
+    return {
+      format: "webp",
+      reason: "JPEG can often be reduced further by converting to WebP/AVIF at similar visual quality."
+    };
+  }
+
+  if (sourceType === "image/webp") {
+    return {
+      format: "avif",
+      reason: "WebP is efficient, but AVIF can still be smaller for many images."
+    };
+  }
+
+  if (sourceType === "image/avif") {
+    return {
+      format: "avif",
+      reason: "AVIF is already highly compressed. Use best compression mode for maximum size reduction."
+    };
+  }
+
+  if (isLossyMime(sourceType)) {
+    return {
+      format: "webp",
+      reason: "A modern lossy format like WebP/AVIF usually provides a better size-quality balance."
+    };
+  }
+
+  return {
+    format: "webp",
+    reason: "WebP is a good default for balanced image compression."
+  };
+}
+
+export async function compressImage(entry, options = {}) {
   const canvas = await drawToCanvas(entry.file);
-  const preferred = ["image/webp", "image/avif", normalizeOutputType(entry.type), "image/jpeg"];
+  const strategy = resolveCompressionStrategy(entry, options);
+  const quality = typeof options.quality === "number"
+    ? Math.max(0.25, Math.min(1, options.quality))
+    : strategy.quality;
+  const preferred = strategy.preferredTypes;
   return exportFromCanvas(canvas, preferred, quality);
 }
 

@@ -1,13 +1,40 @@
 <script>
   import { createEventDispatcher } from "svelte";
   import CropTool from "./CropTool.svelte";
-  import { compressImage, cropImageByNormalizedRect, convertImage } from "../js/image-tools.js";
+  import { compressImage, cropImageByNormalizedRect, convertImage, getCompressionRecommendation } from "../js/image-tools.js";
 
   export let files = [];
   export let busy = false;
   let convertTo = "webp";
+  let compressionMode = "balanced";
+  let compressDuringConvert = true;
+
+  const CONVERT_QUALITY_BY_MODE = {
+    "best-quality": 0.9,
+    balanced: 0.75,
+    "best-compression": 0.5,
+    "extreme-compression": 0.25
+  };
+
+  const COMPRESSION_MODES = {
+    "best-quality": "Best Quality",
+    balanced: "Balanced",
+    "best-compression": "Best Compression",
+    "extreme-compression": "Extreme Compression (not recommended)"
+  };
 
   const dispatch = createEventDispatcher();
+
+  $: recommendations = files.map((file) => getCompressionRecommendation(file));
+  $: recommendationCounts = recommendations.reduce((acc, recommendation) => {
+    const next = { ...acc };
+    const key = recommendation.format;
+    next[key] = (next[key] || 0) + 1;
+    return next;
+  }, {});
+  $: recommendedFormat = Object.entries(recommendationCounts)
+    .sort((a, b) => b[1] - a[1])[0]?.[0] || "webp";
+  $: recommendationReason = recommendations[0]?.reason || "";
 
   function extFromMime(mimeType, fallback = "png") {
     const map = {
@@ -33,13 +60,16 @@
       for (let i = 0; i < files.length; i += 1) {
         const file = files[i];
         if (task === "compress") {
-          const blob = await compressImage(file, 0.8);
+          const blob = await compressImage(file, { mode: compressionMode });
           const ext = extFromMime(blob.type, "jpg");
           outputs.push({ name: `${file.name.replace(/\.[^.]+$/, "")}-compressed.${ext}`, blob });
         }
 
         if (task === "convert") {
-          const blob = await convertImage(file, convertTo, 0.85);
+          const quality = compressDuringConvert
+            ? (CONVERT_QUALITY_BY_MODE[compressionMode] || 0.75)
+            : 1;
+          const blob = await convertImage(file, convertTo, quality);
           const ext = extFromMime(blob.type, convertTo === "jpeg" ? "jpg" : convertTo);
           outputs.push({ name: `${file.name.replace(/\.[^.]+$/, "")}-converted.${ext}`, blob });
         }
@@ -90,6 +120,23 @@
   <p>Compress, crop, and convert many formats client-side, including PNG, JPEG, WebP, AVIF, GIF, HEIC/HEIF, TIFF, BMP, and more.</p>
   <small>HEIC/HEIF decoding loads on demand the first time you process those files.</small>
   <small>Operations run on all selected images from the file list.</small>
+  <small>
+    Auto Compress quickly reduces size and may keep or change format for best result. Convert always uses your chosen target format.
+  </small>
+  <small>
+    Recommendation note: JPEG is best for universal compatibility; WebP/AVIF can be smaller when compatibility requirements are flexible.
+  </small>
+
+  <label for="img-compression-mode">Compression profile</label>
+  <select id="img-compression-mode" bind:value={compressionMode}>
+    <option value="best-quality">Best Quality</option>
+    <option value="balanced">Balanced</option>
+    <option value="best-compression">Best Compression (min quality 50%)</option>
+    <option value="extreme-compression">Extreme Compression (not recommended)</option>
+  </select>
+  <small>
+    Active profile: {COMPRESSION_MODES[compressionMode]}. Compression keeps image resolution unchanged and adjusts encoding quality/format.
+  </small>
 
   <label for="img-convert-to">Convert target</label>
   <select id="img-convert-to" bind:value={convertTo}>
@@ -99,9 +146,38 @@
     <option value="avif">AVIF</option>
   </select>
 
+  <label class="convert-toggle">
+    <input type="checkbox" bind:checked={compressDuringConvert} disabled={busy} />
+    Apply compression during convert
+  </label>
+  <small>
+    {#if compressDuringConvert}
+      Convert uses the selected compression profile.
+    {:else}
+      Convert keeps maximum quality for the chosen output format (conversion only).
+    {/if}
+  </small>
+
+  {#if files.length > 0}
+    <small class="recommendation">
+      Recommendation: convert to {recommendedFormat.toUpperCase()} for smaller files. {recommendationReason}
+      Use {compressDuringConvert ? "Convert + Compress" : "Convert"} to apply this recommendation.
+    </small>
+    <button
+      class="secondary recommend-btn"
+      type="button"
+      on:click={() => (convertTo = recommendedFormat)}
+      disabled={busy}
+    >
+      Set Convert Target to Recommended ({recommendedFormat.toUpperCase()})
+    </button>
+  {/if}
+
   <div class="actions">
-    <button on:click={() => run("compress")} disabled={busy || files.length < 1}>Compress Selection</button>
-    <button on:click={() => run("convert")} disabled={busy || files.length < 1}>Convert Selection</button>
+    <button on:click={() => run("compress")} disabled={busy || files.length < 1}>Auto Compress</button>
+    <button on:click={() => run("convert")} disabled={busy || files.length < 1}>
+      {compressDuringConvert ? "Convert + Compress" : "Convert"}
+    </button>
   </div>
 
   <CropTool {files} {busy} on:apply={applyCrop} />
@@ -143,10 +219,25 @@
     background: #fff;
   }
 
+  .recommendation {
+    margin-bottom: 0.55rem;
+  }
+
+  .recommend-btn {
+    margin-bottom: 0.8rem;
+  }
+
   .actions {
     display: flex;
     flex-wrap: wrap;
     gap: 0.6rem;
+  }
+
+  .convert-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-bottom: 0.3rem;
   }
 
   .actions button {
