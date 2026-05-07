@@ -1,5 +1,5 @@
 import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
-import { invokeWasm } from "./wasm-loader.js";
+import { invokeWasm, loadWasmModule } from "./wasm-loader.js";
 
 let pdfRuntimePromise;
 
@@ -508,4 +508,59 @@ export async function unlockPdf(entry, password = "", onProgress = () => {}) {
   const out = await newDoc.save();
   onProgress(100);
   return new Blob([out], { type: "application/pdf" });
+}
+
+/**
+ * Encrypt a PDF with a password using the Go/WASM pdfcpu backend.
+ *
+ * @param {import("../js/detect.js").EnrichedFile} entry
+ * @param {string} password
+ * @param {(n: number) => void} [onProgress]
+ * @returns {Promise<Blob>}
+ */
+export async function lockPdf(entry, password, onProgress = () => {}) {
+  const trimmed = `${password ?? ""}`.trim();
+  if (!trimmed) {
+    throw new Error("Enter a password to lock this PDF.");
+  }
+
+  onProgress(10);
+  const bytes = new Uint8Array(await entry.file.arrayBuffer());
+  onProgress(35);
+
+  // Load the module explicitly so we can distinguish "module unavailable"
+  // from "encryption failed" and surface the real pdfcpu error to the user.
+  const mod = await loadWasmModule("pdf");
+  if (!mod) {
+    throw new Error(
+      "PDF lock requires the WASM PDF module, which could not be loaded. " +
+      "Run \`npm run build:wasm\` to build it, then refresh."
+    );
+  }
+
+  const fn = typeof globalThis.wasmLockPDF === "function" ? globalThis.wasmLockPDF : null;
+  if (!fn) {
+    throw new Error(
+      "wasmLockPDF is not registered. " +
+      "Run \`npm run build:wasm\` to rebuild the PDF WASM module, then refresh."
+    );
+  }
+
+  let result;
+  try {
+    result = fn(bytes, trimmed);
+  } catch (e) {
+    throw new Error(`PDF encryption failed: ${e?.message ?? e}`);
+  }
+
+  if (result instanceof Error) {
+    throw new Error(`PDF encryption failed: ${result.message}`);
+  }
+
+  if (!(result instanceof Uint8Array)) {
+    throw new Error("PDF encryption produced unexpected output.");
+  }
+
+  onProgress(100);
+  return new Blob([result], { type: "application/pdf" });
 }

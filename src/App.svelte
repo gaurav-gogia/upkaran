@@ -144,7 +144,8 @@
         "Add page numbers",
         "Compress PDF",
         "PDF to images",
-        "Unlock / remove PDF restrictions"
+        "Unlock / remove PDF restrictions",
+        "Lock PDF with password"
       ]
     },
     {

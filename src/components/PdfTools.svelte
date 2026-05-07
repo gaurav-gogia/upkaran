@@ -14,7 +14,8 @@
     getPdfPageCount,
     summarizeCustomSplitSelection,
     buildAllPagesSelection,
-    unlockPdf
+    unlockPdf,
+    lockPdf
   } from "../js/pdf-tools.js";
   import { formatBytes } from "../js/detect.js";
 
@@ -58,11 +59,23 @@
   let unlockSuccess = "";
   let unlocking = false;
 
+  // ── PDF Lock state ──────────────────────────────────────────────────────
+  let lockPassword = "";
+  let lockPasswordConfirm = "";
+  let lockError = "";
+  let lockSuccess = "";
+  let locking = false;
+
   $: if (files.length > 0) {
     unlockNeedsPassword = false;
     unlockError = "";
     unlockSuccess = "";
     unlockPassword = "";
+
+    lockPassword = "";
+    lockPasswordConfirm = "";
+    lockError = "";
+    lockSuccess = "";
   }
 
   async function runUnlock() {
@@ -85,6 +98,36 @@
       }
     } finally {
       unlocking = false;
+    }
+  }
+
+  async function runLock() {
+    if (locking || !files.length) return;
+
+    lockError = "";
+    lockSuccess = "";
+
+    if (!lockPassword.trim()) {
+      lockError = "Enter a password to lock this PDF.";
+      return;
+    }
+    if (lockPassword !== lockPasswordConfirm) {
+      lockError = "Password and confirmation do not match.";
+      return;
+    }
+
+    locking = true;
+    try {
+      const blob = await lockPdf(files[0], lockPassword, (p) => dispatch("progress", p));
+      const baseName = files[0].name.replace(/\.pdf$/i, "");
+      dispatch("output", [{ name: `${baseName}-locked.pdf`, blob }]);
+      lockSuccess = "PDF locked and added to results.";
+      lockPassword = "";
+      lockPasswordConfirm = "";
+    } catch (e) {
+      lockError = e?.message || "Lock failed.";
+    } finally {
+      locking = false;
     }
   }
 
@@ -562,7 +605,7 @@
         bind:value={unlockPassword}
         placeholder="Enter PDF password"
         disabled={unlocking}
-        on:keydown={(e) => e.key === 'Enter' && runUnlock()}
+        on:keydown={(e) => e.key === "Enter" && runUnlock()}
       />
     {/if}
 
@@ -575,7 +618,53 @@
 
     <div class="actions">
       <button on:click={runUnlock} disabled={busy || unlocking || files.length < 1}>
-        {unlocking ? "Unlocking…" : "Unlock PDF"}
+        {unlocking ? "Unlocking..." : "Unlock PDF"}
+      </button>
+    </div>
+  </section>
+
+  <!-- PDF Lock section -->
+  <section class="page-actions lock-section">
+    <header>
+      <h4>Lock PDF</h4>
+      <span>Protect with an opening password</span>
+    </header>
+    <p class="unlock-desc">Creates an encrypted PDF that requires a password to open.</p>
+
+    <div class="lock-grid">
+      <div>
+        <label for="pdf-lock-password">Password</label>
+        <input
+          id="pdf-lock-password"
+          type="password"
+          bind:value={lockPassword}
+          placeholder="Enter new PDF password"
+          disabled={locking}
+        />
+      </div>
+      <div>
+        <label for="pdf-lock-password-confirm">Confirm password</label>
+        <input
+          id="pdf-lock-password-confirm"
+          type="password"
+          bind:value={lockPasswordConfirm}
+          placeholder="Re-enter password"
+          disabled={locking}
+          on:keydown={(e) => e.key === "Enter" && runLock()}
+        />
+      </div>
+    </div>
+
+    {#if lockError}
+      <p class="unlock-msg unlock-msg--error">{lockError}</p>
+    {/if}
+    {#if lockSuccess}
+      <p class="unlock-msg unlock-msg--success">{lockSuccess}</p>
+    {/if}
+
+    <div class="actions">
+      <button on:click={runLock} disabled={busy || locking || files.length < 1}>
+        {locking ? "Locking..." : "Lock PDF"}
       </button>
     </div>
   </section>
@@ -928,14 +1017,27 @@
       min-width: 10rem;
     }
 
-    .number-grid {
+    .number-grid,
+    .lock-grid {
       grid-template-columns: 1fr;
     }
   }
 
   /* Unlock section */
-  .unlock-section {
+  .unlock-section,
+  .lock-section {
     margin-top: 0.5rem;
+  }
+
+  .lock-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0.6rem;
+    margin-bottom: 0.2rem;
+  }
+
+  .lock-grid > div {
+    min-width: 0;
   }
 
   .unlock-desc {

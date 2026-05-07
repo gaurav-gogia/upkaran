@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"syscall/js"
 	"upkaran/wasm"
 )
@@ -41,7 +42,22 @@ func wasmCompressPDF(_ js.Value, args []js.Value) any {
 	return bytesToJS(out)
 }
 
+func wasmLockPDF(_ js.Value, args []js.Value) any {
+	if len(args) < 2 {
+		return errorToJS(errors.New("expected PDF bytes and password"))
+	}
+
+	out, err := wasm.LockPDF(jsToBytes(args[0]), args[1].String())
+	if err != nil {
+		return errorToJS(err)
+	}
+	return bytesToJS(out)
+}
+
 func main() {
+	// Prevent pdfcpu from attempting filesystem/config access in the browser WASM sandbox.
+	wasm.InitPdfcpu()
 	js.Global().Set("wasmCompressPDF", js.FuncOf(wasmCompressPDF))
+	js.Global().Set("wasmLockPDF", js.FuncOf(wasmLockPDF))
 	select {}
 }

@@ -30,15 +30,27 @@ finally {
 }
 
 $runtimeTarget = "public/wasm/wasm_exec.js"
-if ([string]::IsNullOrWhiteSpace($env:GOROOT)) {
-    Write-Warning "wasm_exec.js not copied because GOROOT is not set."
+
+# Resolve GOROOT via `go env` if the environment variable is not set.
+$goroot = $env:GOROOT
+if ([string]::IsNullOrWhiteSpace($goroot)) {
+    $goroot = (go env GOROOT 2>$null).Trim()
+}
+
+if ([string]::IsNullOrWhiteSpace($goroot)) {
+    Write-Warning "wasm_exec.js not copied because GOROOT could not be determined."
 }
 else {
-    $runtimeSource = Join-Path $env:GOROOT "misc/wasm/wasm_exec.js"
+    # Go 1.21+ moved wasm_exec.js from misc/wasm to lib/wasm.
+    $runtimeSource = Join-Path $goroot "lib/wasm/wasm_exec.js"
+    if (-not (Test-Path $runtimeSource)) {
+        $runtimeSource = Join-Path $goroot "misc/wasm/wasm_exec.js"
+    }
     if (Test-Path $runtimeSource) {
         Copy-Item $runtimeSource $runtimeTarget -Force
+        Write-Host "Copied wasm_exec.js from $runtimeSource"
     }
     else {
-        Write-Warning "wasm_exec.js not copied because file was not found at $runtimeSource"
+        Write-Warning "wasm_exec.js not found in GOROOT ($goroot). The browser Go runtime may be stale."
     }
 }

@@ -20,6 +20,8 @@ WebAssembly. Drop files in, get results out — nothing leaves your device.
 - Add page numbers with configurable position and style
 - Compress PDF (via Go WebAssembly)
 - Convert PDF pages to images (PNG / JPEG / WebP)
+- Unlock PDF (remove restrictions or password with provided passphrase)
+- Lock PDF with an opening password
 
 ### Image Tools
 
