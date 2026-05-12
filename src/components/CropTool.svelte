@@ -496,25 +496,27 @@
       <button class="secondary" type="button" on:click={resetCrop} disabled={busy}>Reset Crop</button>
     </div>
 
-    <div class="stage-wrap">
-      <canvas
-        bind:this={stage}
-        tabindex={busy ? -1 : 0}
-        on:pointerdown={(e) => { onPointerDownPinch(e); onPointerDown(e); }}
-        on:pointermove={(e) => { onPointerMovePinch(e); if (activePointers.size < 2) onPointerMove(e); }}
-        on:pointerup={(e) => { onPointerUpPinch(e); onPointerUp(e); }}
-        on:pointercancel={(e) => { onPointerUpPinch(e); onPointerUp(e); }}
-        on:pointerenter={updateHoverCursor}
-        on:pointerleave={() => applyCursor("")}
-        on:wheel|preventDefault={onWheel}
-        on:mousemove={updateHoverCursor}
-        on:keydown={onKeydown}
-      ></canvas>
-    </div>
+    <div class="workspace-row">
+      <div class="stage-wrap">
+        <canvas
+          bind:this={stage}
+          tabindex={busy ? -1 : 0}
+          on:pointerdown={(e) => { onPointerDownPinch(e); onPointerDown(e); }}
+          on:pointermove={(e) => { onPointerMovePinch(e); if (activePointers.size < 2) onPointerMove(e); }}
+          on:pointerup={(e) => { onPointerUpPinch(e); onPointerUp(e); }}
+          on:pointercancel={(e) => { onPointerUpPinch(e); onPointerUp(e); }}
+          on:pointerenter={updateHoverCursor}
+          on:pointerleave={() => applyCursor("")}
+          on:wheel|preventDefault={onWheel}
+          on:mousemove={updateHoverCursor}
+          on:keydown={onKeydown}
+        ></canvas>
+      </div>
 
-    <div class="preview-wrap">
-      <h5>Live preview</h5>
-      <canvas bind:this={preview}></canvas>
+      <div class="preview-wrap">
+        <h5>Live preview</h5>
+        <canvas bind:this={preview}></canvas>
+      </div>
     </div>
 
     <button type="button" on:click={applyCrop} disabled={busy || files.length < 1}>Apply Crop to {files.length} Image(s)</button>
@@ -614,12 +616,19 @@
     color: var(--md-sys-color-on-surface-variant);
   }
 
+  .workspace-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+    align-items: start;
+    gap: 0.9rem;
+    margin-bottom: 0.9rem;
+  }
+
   .stage-wrap {
     border: 1px solid var(--md-sys-color-outline-variant);
     border-radius: 12px;
     overflow: auto;
     max-height: 420px;
-    margin-bottom: 0.8rem;
     background: var(--md-sys-color-surface);
   }
 
@@ -635,13 +644,15 @@
   }
 
   .preview-wrap {
-    margin-bottom: 0.9rem;
+    align-self: start;
+    position: sticky;
+    top: 0.6rem;
   }
 
   .preview-wrap canvas {
     border: 1px solid var(--md-sys-color-outline-variant);
     border-radius: 10px;
-    max-width: min(280px, 100%);
+    max-width: 100%;
     width: 100%;
     background: var(--md-sys-color-surface);
   }
@@ -655,6 +666,15 @@
     .controls {
       grid-template-columns: 1fr;
       gap: 0.35rem;
+    }
+
+    .workspace-row {
+      grid-template-columns: 1fr;
+    }
+
+    .preview-wrap {
+      position: static;
+      top: auto;
     }
 
     .controls span {

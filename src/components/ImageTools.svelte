@@ -43,6 +43,7 @@
       "image/webp": "webp",
       "image/avif": "avif",
       "image/gif": "gif",
+      "image/svg+xml": "svg",
       "image/bmp": "bmp",
       "image/tiff": "tiff"
     };
@@ -144,6 +145,7 @@
     <option value="jpeg">JPEG</option>
     <option value="webp">WebP</option>
     <option value="avif">AVIF</option>
+    <option value="svg">SVG</option>
   </select>
 
   <label class="convert-toggle">
@@ -156,6 +158,9 @@
     {:else}
       Convert keeps maximum quality for the chosen output format (conversion only).
     {/if}
+  </small>
+  <small>
+    SVG target preserves existing vector SVG files. Raster images converted to SVG are embedded as image data inside an SVG wrapper.
   </small>
 
   {#if files.length > 0}

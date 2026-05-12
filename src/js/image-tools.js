@@ -1,5 +1,7 @@
 function mimeFromFormat(format) {
   switch (format) {
+    case "svg":
+      return "image/svg+xml";
     case "jpeg":
     case "jpg":
       return "image/jpeg";
@@ -30,6 +32,11 @@ const HEIC_MIME_TYPES = new Set([
 function extensionFromName(name = "") {
   const match = name.toLowerCase().match(/\.([^.]+)$/);
   return match ? match[1] : "";
+}
+
+function isSvgLike(file) {
+  const ext = extensionFromName(file?.name);
+  return file?.type === "image/svg+xml" || ext === "svg";
 }
 
 function isHeicLike(file) {
@@ -163,6 +170,41 @@ function normalizeOutputType(type) {
 
 async function canvasToBlob(canvas, type, quality) {
   return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+}
+
+function escapeXml(value) {
+  return `${value}`
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+async function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read image data for SVG conversion."));
+    reader.onload = () => resolve(`${reader.result || ""}`);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function rasterCanvasToSvgBlob(canvas) {
+  const pngBlob = await canvasToBlob(canvas, "image/png", 1);
+  if (!pngBlob) {
+    throw new Error("Unable to export image data for SVG conversion.");
+  }
+
+  const dataUrl = await blobToDataUrl(pngBlob);
+  const width = Math.max(1, Math.round(canvas.width));
+  const height = Math.max(1, Math.round(canvas.height));
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>\n`
+    + `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`
+    + `<image width="${width}" height="${height}" href="${escapeXml(dataUrl)}"/>`
+    + `</svg>`;
+
+  return new Blob([svg], { type: "image/svg+xml" });
 }
 
 async function exportFromCanvas(canvas, preferredTypes, quality) {
@@ -319,6 +361,15 @@ export async function cropImageByNormalizedRect(entryOrFile, normalizedRect) {
 
 export async function convertImage(entryOrFile, targetFormat = "webp", quality = 0.85) {
   const file = resolveFileBlob(entryOrFile);
+  if (targetFormat === "svg") {
+    if (isSvgLike(file)) {
+      return file.slice(0, file.size, "image/svg+xml");
+    }
+
+    const canvas = await drawToCanvas(file);
+    return rasterCanvasToSvgBlob(canvas);
+  }
+
   const canvas = await drawToCanvas(file);
   const targetType = mimeFromFormat(targetFormat);
   const fallback = targetType === "image/jpeg" ? "image/webp" : "image/jpeg";
