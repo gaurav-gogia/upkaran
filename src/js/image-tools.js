@@ -37,16 +37,75 @@ function isHeicLike(file) {
   return HEIC_MIME_TYPES.has(file?.type) || ext === "heic" || ext === "heif";
 }
 
+let heicDecoderPromise;
+
+function resolveHeicDecoder(moduleValue) {
+  if (typeof moduleValue === "function") return moduleValue;
+  if (!moduleValue || typeof moduleValue !== "object") return null;
+
+  if (typeof moduleValue.default === "function") return moduleValue.default;
+  if (typeof moduleValue.heic2any === "function") return moduleValue.heic2any;
+
+  const nestedDefault = moduleValue.default;
+  if (nestedDefault && typeof nestedDefault === "object") {
+    if (typeof nestedDefault.default === "function") return nestedDefault.default;
+    if (typeof nestedDefault.heic2any === "function") return nestedDefault.heic2any;
+  }
+
+  return null;
+}
+
+async function loadHeicDecoder() {
+  if (!heicDecoderPromise) {
+    heicDecoderPromise = (async () => {
+      const mod = await import("heic2any");
+      const decoder = resolveHeicDecoder(mod);
+      if (typeof decoder === "function") return decoder;
+      throw new Error("HEIC decoder export was not callable.");
+    })();
+  }
+
+  return heicDecoderPromise;
+}
+
 async function decodeHeicBlob(file) {
-  const heic2any = (await import("heic2any")).default;
-  const output = await heic2any({
-    blob: file,
-    toType: "image/png"
-  });
+  let heic2any;
+  try {
+    heic2any = await loadHeicDecoder();
+  } catch (error) {
+    throw new Error(`Failed to load HEIC/HEIF decoder: ${error?.message || "Unknown import error."}`);
+  }
+
+  let output;
+  try {
+    output = await heic2any({
+      blob: file,
+      toType: "image/png"
+    });
+  } catch (error) {
+    throw new Error(`HEIC/HEIF decode failed: ${error?.message || "Unknown decode error."}`);
+  }
 
   if (output instanceof Blob) return output;
   if (Array.isArray(output) && output[0] instanceof Blob) return output[0];
   throw new Error("Unable to decode HEIC/HEIF image.");
+}
+
+function resolveFileBlob(entryOrFile) {
+  const file = entryOrFile?.file instanceof Blob ? entryOrFile.file : entryOrFile;
+  if (!(file instanceof Blob)) {
+    throw new Error("Invalid image input.");
+  }
+  return file;
+}
+
+function resolveSourceType(entryOrFile) {
+  if (entryOrFile && typeof entryOrFile === "object" && typeof entryOrFile.type === "string") {
+    return entryOrFile.type;
+  }
+
+  const file = entryOrFile?.file instanceof Blob ? entryOrFile.file : entryOrFile;
+  return file?.type || "";
 }
 
 async function drawViaImageElement(blob) {
@@ -93,10 +152,7 @@ async function drawToCanvas(file) {
 }
 
 export async function drawImageToCanvas(entryOrFile) {
-  const file = entryOrFile?.file instanceof Blob ? entryOrFile.file : entryOrFile;
-  if (!(file instanceof Blob)) {
-    throw new Error("Invalid image input.");
-  }
+  const file = resolveFileBlob(entryOrFile);
   return drawToCanvas(file);
 }
 
@@ -201,9 +257,11 @@ export function getCompressionRecommendation(entry) {
   };
 }
 
-export async function compressImage(entry, options = {}) {
-  const canvas = await drawToCanvas(entry.file);
-  const strategy = resolveCompressionStrategy(entry, options);
+export async function compressImage(entryOrFile, options = {}) {
+  const file = resolveFileBlob(entryOrFile);
+  const sourceType = resolveSourceType(entryOrFile) || file.type;
+  const canvas = await drawToCanvas(file);
+  const strategy = resolveCompressionStrategy({ type: sourceType }, options);
   const quality = typeof options.quality === "number"
     ? Math.max(0.25, Math.min(1, options.quality))
     : strategy.quality;
@@ -211,8 +269,10 @@ export async function compressImage(entry, options = {}) {
   return exportFromCanvas(canvas, preferred, quality);
 }
 
-export async function cropImage(entry, rect) {
-  const source = await drawToCanvas(entry.file);
+export async function cropImage(entryOrFile, rect) {
+  const file = resolveFileBlob(entryOrFile);
+  const sourceType = resolveSourceType(entryOrFile) || file.type;
+  const source = await drawToCanvas(file);
   const safeRect = {
     x: Math.max(0, Math.floor(rect.x)),
     y: Math.max(0, Math.floor(rect.y)),
@@ -234,12 +294,12 @@ export async function cropImage(entry, rect) {
     safeRect.width,
     safeRect.height
   );
-  const preferred = [normalizeOutputType(entry.type), "image/png", "image/jpeg"];
+  const preferred = [normalizeOutputType(sourceType), "image/png", "image/jpeg"];
   return exportFromCanvas(canvas, preferred, 0.95);
 }
 
-export async function cropImageByNormalizedRect(entry, normalizedRect) {
-  const source = await drawToCanvas(entry.file);
+export async function cropImageByNormalizedRect(entryOrFile, normalizedRect) {
+  const source = await drawImageToCanvas(entryOrFile);
   const rect = {
     x: Math.round(source.width * normalizedRect.x),
     y: Math.round(source.height * normalizedRect.y),
@@ -254,11 +314,12 @@ export async function cropImageByNormalizedRect(entry, normalizedRect) {
     height: Math.max(1, Math.min(rect.height, source.height - rect.y))
   };
 
-  return cropImage(entry, bounded);
+  return cropImage(entryOrFile, bounded);
 }
 
-export async function convertImage(entry, targetFormat = "webp", quality = 0.85) {
-  const canvas = await drawToCanvas(entry.file);
+export async function convertImage(entryOrFile, targetFormat = "webp", quality = 0.85) {
+  const file = resolveFileBlob(entryOrFile);
+  const canvas = await drawToCanvas(file);
   const targetType = mimeFromFormat(targetFormat);
   const fallback = targetType === "image/jpeg" ? "image/webp" : "image/jpeg";
   return exportFromCanvas(canvas, [targetType, fallback], quality);
