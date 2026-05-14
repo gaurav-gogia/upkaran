@@ -5,6 +5,9 @@
 
 import { PDFDocument } from "pdf-lib";
 import { strFromU8, unzipSync } from "fflate";
+import { measureAsync } from "./perf-profile.js";
+
+const HASH_WORKER_MIN_BYTES = 256 * 1024;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MD5 — pure JS (Web Crypto does not support MD5)
@@ -64,12 +67,78 @@ async function hexDigest(buffer, algo) {
   return Array.from(new Uint8Array(h)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function computeHashes(buffer) {
+async function computeHashesMainThread(buffer) {
   const [sha256, sha1] = await Promise.all([
     hexDigest(buffer, "SHA-256"),
     hexDigest(buffer, "SHA-1"),
   ]);
   return { md5: md5Hex(new Uint8Array(buffer)), sha1, sha256 };
+}
+
+function hashWorkerSupported() {
+  return typeof Worker !== "undefined";
+}
+
+async function computeHashesWithWorker(buffer) {
+  const worker = new Worker(new URL("./workers/hash.worker.js", import.meta.url), { type: "module" });
+  const requestId = `hash-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  // Keep the original buffer intact for parallel type-specific analysis.
+  const transferBuffer = buffer.slice(0);
+
+  try {
+    return await new Promise((resolve, reject) => {
+      const onMessage = (event) => {
+        const message = event.data || {};
+        if (message.id !== requestId) return;
+
+        worker.removeEventListener("message", onMessage);
+        worker.removeEventListener("error", onError);
+
+        if (message.ok) {
+          resolve(message.hashes);
+          return;
+        }
+
+        reject(new Error(message.error || "Hash worker failed"));
+      };
+
+      const onError = () => {
+        worker.removeEventListener("message", onMessage);
+        worker.removeEventListener("error", onError);
+        reject(new Error("Hash worker crashed"));
+      };
+
+      worker.addEventListener("message", onMessage);
+      worker.addEventListener("error", onError);
+
+      worker.postMessage(
+        {
+          type: "compute",
+          id: requestId,
+          buffer: transferBuffer,
+        },
+        [transferBuffer]
+      );
+    });
+  } finally {
+    worker.terminate();
+  }
+}
+
+export async function computeHashes(buffer, options = {}) {
+  const useWorker = options.useWorker !== false;
+  const workerMinBytes = Math.max(0, Number(options.workerMinBytes) || HASH_WORKER_MIN_BYTES);
+
+  if (useWorker && hashWorkerSupported() && buffer.byteLength >= workerMinBytes) {
+    try {
+      return await computeHashesWithWorker(buffer);
+    } catch {
+      // Fall back to main-thread hashing if worker initialization or execution fails.
+    }
+  }
+
+  return computeHashesMainThread(buffer);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -587,20 +656,32 @@ export async function analyzeFile(entry) {
   const buffer = await file.arrayBuffer();
   const bytes  = new Uint8Array(buffer);
 
-  // Hashes in parallel with type-specific analysis
-  const [hashes, specific] = await Promise.all([
-    computeHashes(buffer),
-    (async () => {
+  // Hashes in parallel with type-specific analysis.
+  let hashDurationMs = 0;
+  let specificDurationMs = 0;
+
+  const hashTask = measureAsync(
+    "forensics.hashes",
+    () => computeHashes(buffer),
+    { kind, sizeBytes: size || 0 }
+  ).then(({ result, durationMs }) => {
+    hashDurationMs = Math.round(durationMs);
+    return result;
+  });
+
+  const specificTask = measureAsync(
+    "forensics.specific_analysis",
+    async () => {
       try {
         if (kind === "pdf") {
           return { _type: "pdf", ...(await _analyzePdf(buffer)) };
         }
 
         if (kind === "image") {
-          const dims  = await _imageDimensions(file);
+          const dims = await _imageDimensions(file);
           const isJpeg = bytes[0] === 0xFF && bytes[1] === 0xD8;
-          const isPng  = bytes[0] === 0x89 && bytes[1] === 0x50;
-          const exif  = isJpeg ? parseJpegExif(buffer) : null;
+          const isPng = bytes[0] === 0x89 && bytes[1] === 0x50;
+          const exif = isJpeg ? parseJpegExif(buffer) : null;
           const pngMeta = isPng ? parsePngMeta(buffer) : null;
 
           return {
@@ -611,7 +692,7 @@ export async function analyzeFile(entry) {
           };
         }
 
-        if (kind === "document" && ["docx","pptx","xlsx"].includes(ext)) {
+        if (kind === "document" && ["docx", "pptx", "xlsx"].includes(ext)) {
           return { _type: "office", ...(await _analyzeOffice(buffer, ext)) };
         }
 
@@ -637,13 +718,26 @@ export async function analyzeFile(entry) {
       } catch (e) {
         return { _type: "error", error: e.message };
       }
-    })()
-  ]);
+    },
+    { kind, ext: ext || "", sizeBytes: size || 0 }
+  ).then(({ result, durationMs }) => {
+    specificDurationMs = Math.round(durationMs);
+    return result;
+  });
+
+  const [hashes, specific] = await Promise.all([hashTask, specificTask]);
 
   return {
-    name, size, kind, mimeType: type,
+    name,
+    size,
+    kind,
+    mimeType: type,
     lastModified: file.lastModified,
     hashes,
+    perf: {
+      hashMs: hashDurationMs,
+      specificMs: specificDurationMs,
+    },
     ...specific,
   };
 }

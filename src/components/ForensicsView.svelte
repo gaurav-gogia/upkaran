@@ -2,7 +2,17 @@
   import { createEventDispatcher, onMount } from "svelte";
   import { fly, fade } from "svelte/transition";
   import { analyzeFile } from "../js/forensics.js";
+  import { calculateEntropyProfile } from "../js/forensics-entropy.js";
+  import {
+    buildIntegrityReport,
+    integrityReportToJsonBlob,
+    integrityReportToText,
+  } from "../js/integrity-report.js";
+  import { getOperationLineageForEntry } from "../js/operation-lineage.js";
+  import { saveBlob } from "../js/download.js";
   import { formatBytes } from "../js/detect.js";
+  import { measureAsync } from "../js/perf-profile.js";
+  import EntropyHeatmap from "./EntropyHeatmap.svelte";
 
   export let entry; // enriched file entry
 
@@ -13,11 +23,30 @@
   let data = null;
   let activeTab = "overview";
   let copiedHash = null;
+  let entropyProfile = null;
+  let entropyLoading = false;
+  let entropyError = null;
+  let entropyBlockSize = 4096;
+  let entropyJobId = 0;
+  let analyzeDurationMs = 0;
+  let entropyDurationMs = 0;
+  let integrityReport = null;
+  let integrityTextPreview = "";
+  let lineageOperations = [];
+
+  const ENTROPY_BLOCK_SIZE_OPTIONS = [1024, 4096, 16384, 65536];
 
   onMount(async () => {
     try {
-      data = await analyzeFile(entry);
+      const analysis = await measureAsync("forensics.analyze_file", () => analyzeFile(entry), {
+        kind: entry?.kind || "unknown",
+        sizeBytes: entry?.size || 0,
+      });
+      data = analysis.result;
+      analyzeDurationMs = Math.round(analysis.durationMs);
+      lineageOperations = getOperationLineageForEntry(entry, 20);
       activeTab = "overview";
+      loadEntropy();
     } catch (e) {
       err = e.message || "Analysis failed";
     } finally {
@@ -37,6 +66,8 @@
     if (d._type === "office") { t.push({ id: "metadata", label: "Metadata" }); t.push({ id: "structure", label: "Structure" }); }
     if (d._type === "text")   { t.push({ id: "metadata", label: "Analysis" }); }
     if (d._type === "zip")    { t.push({ id: "structure", label: "File Tree" }); }
+    t.push({ id: "integrity", label: "Integrity" });
+    t.push({ id: "entropy", label: "Entropy" });
     return t;
   }
 
@@ -91,6 +122,85 @@
   function entries(obj) {
     if (!obj) return [];
     return Object.entries(obj).filter(([, v]) => v != null && v !== "" && v !== false);
+  }
+
+  async function loadEntropy() {
+    const jobId = ++entropyJobId;
+    entropyLoading = true;
+    entropyError = null;
+
+    try {
+      const profile = await measureAsync("forensics.entropy_profile", () =>
+        calculateEntropyProfile(entry.file, {
+          blockSize: entropyBlockSize,
+          maxPoints: 640,
+        }), {
+          blockSize: entropyBlockSize,
+          sizeBytes: entry?.size || 0,
+        }
+      );
+      entropyProfile = profile.result;
+      entropyDurationMs = Math.round(profile.durationMs);
+    } catch (e) {
+      if (jobId === entropyJobId) {
+        entropyProfile = null;
+        entropyError = e?.message || "Entropy analysis failed";
+      }
+    } finally {
+      if (jobId === entropyJobId) {
+        entropyLoading = false;
+      }
+    }
+  }
+
+  async function onEntropyBlockSizeChange(event) {
+    entropyBlockSize = Number(event.target.value) || 4096;
+    await loadEntropy();
+  }
+
+  function reportFileBaseName() {
+    const source = entry?.name || "upkaran-file";
+    const stem = source.replace(/\.[^/.]+$/, "");
+    return stem.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "upkaran-file";
+  }
+
+  function exportIntegrityJson() {
+    if (!integrityReport) return;
+    const blob = integrityReportToJsonBlob(integrityReport);
+    saveBlob(blob, `${reportFileBaseName()}.integrity-report.json`);
+  }
+
+  function exportIntegrityText() {
+    if (!integrityReport) return;
+    const blob = new Blob([integrityReportToText(integrityReport)], { type: "text/plain;charset=utf-8" });
+    saveBlob(blob, `${reportFileBaseName()}.integrity-report.txt`);
+  }
+
+  $: if (data) {
+    const operations = lineageOperations.length > 0
+      ? lineageOperations.map((record) => ({
+        action: `${record.action} (${record.toolKey})`,
+        status: record.status || "completed",
+        note: record.outputCount > 0 ? `${record.outputCount} output(s)` : "No outputs",
+        at: record.at,
+      }))
+      : [
+        {
+          action: "forensics_inspection",
+          status: "completed",
+          note: "Generated from local browser analysis",
+          at: new Date().toISOString(),
+        },
+      ];
+
+    integrityReport = buildIntegrityReport(entry, data, {
+      entropyProfile,
+      operations,
+    });
+    integrityTextPreview = integrityReportToText(integrityReport);
+  } else {
+    integrityReport = null;
+    integrityTextPreview = "";
   }
 </script>
 
@@ -173,6 +283,14 @@
 
       <!-- Right: Tabbed details -->
       <main class="fv-details">
+        {#if analyzeDurationMs > 0}
+          <p class="perf-note">Initial analysis time: {analyzeDurationMs} ms</p>
+        {/if}
+        {#if data?.perf?.hashMs > 0 || data?.perf?.specificMs > 0}
+          <p class="perf-note">
+            Stage timings: hash {data?.perf?.hashMs || 0} ms, type analysis {data?.perf?.specificMs || 0} ms
+          </p>
+        {/if}
 
         <!-- Tab bar (chips) -->
         <div class="fv-tabs" role="tablist">
@@ -492,6 +610,101 @@
               </div>
             {/if}
 
+          </div>
+        {/if}
+
+        <!-- Tab: Entropy -->
+        {#if activeTab === "entropy"}
+          <div class="tab-pane" role="tabpanel">
+            <h3 class="section-title">Entropy heatmap</h3>
+
+            {#if entropyDurationMs > 0}
+              <p class="perf-note">Last entropy compute time: {entropyDurationMs} ms</p>
+            {/if}
+
+            <div class="entropy-controls">
+              <label for="entropy-block-size">Block size</label>
+              <select id="entropy-block-size" value={entropyBlockSize} on:change={onEntropyBlockSizeChange}>
+                {#each ENTROPY_BLOCK_SIZE_OPTIONS as size}
+                  <option value={size}>{size.toLocaleString()} bytes</option>
+                {/each}
+              </select>
+              <button class="secondary" type="button" on:click={loadEntropy} disabled={entropyLoading}>
+                {entropyLoading ? "Analyzing..." : "Recalculate"}
+              </button>
+            </div>
+
+            {#if entropyError}
+              <p class="fv-empty">{entropyError}</p>
+            {:else if entropyLoading && !entropyProfile}
+              <p class="fv-empty">Computing entropy profile...</p>
+            {:else if entropyProfile}
+              <div class="entropy-stats">
+                <span>Blocks: {entropyProfile.totalBlocks.toLocaleString()}</span>
+                <span>Sampled: {entropyProfile.sampledBlocks.toLocaleString()}</span>
+                <span>Stride: {entropyProfile.sampleStride.toLocaleString()}</span>
+                <span>Min: {entropyProfile.summary.min.toFixed(3)}</span>
+                <span>Mean: {entropyProfile.summary.mean.toFixed(3)}</span>
+                <span>Max: {entropyProfile.summary.max.toFixed(3)}</span>
+                <span>
+                  High entropy: {entropyProfile.summary.highEntropyCount.toLocaleString()} /
+                  {entropyProfile.sampledBlocks.toLocaleString()} (>= {entropyProfile.summary.highEntropyThreshold})
+                </span>
+              </div>
+
+              <EntropyHeatmap profile={entropyProfile} />
+            {/if}
+          </div>
+        {/if}
+
+        <!-- Tab: Integrity -->
+        {#if activeTab === "integrity"}
+          <div class="tab-pane" role="tabpanel">
+            <h3 class="section-title">Integrity report</h3>
+
+            {#if integrityReport}
+              <div class="integrity-actions">
+                <button type="button" on:click={exportIntegrityJson}>Export JSON</button>
+                <button class="secondary" type="button" on:click={exportIntegrityText}>Export text</button>
+              </div>
+
+              <table class="fv-table">
+                <tbody>
+                  <tr><th>Report version</th><td>{integrityReport.reportVersion}</td></tr>
+                  <tr><th>Generated at</th><td>{fmtDate(integrityReport.generatedAt)}</td></tr>
+                  <tr><th>Source</th><td>{integrityReport.source.name}</td></tr>
+                  <tr><th>SHA-256</th><td class="fv-mono">{integrityReport.analysis.hashes.sha256 || "n/a"}</td></tr>
+                  <tr><th>Operations</th><td>{integrityReport.operations.length}</td></tr>
+                  {#if integrityReport.analysis.metadata.zip}
+                    <tr>
+                      <th>Compression ratio</th>
+                      <td>{integrityReport.analysis.metadata.zip.compressionRatio || "n/a"}</td>
+                    </tr>
+                  {/if}
+                </tbody>
+              </table>
+
+              <h3 class="section-title">Text preview</h3>
+              <pre class="integrity-preview fv-mono">{integrityTextPreview}</pre>
+
+              <h3 class="section-title">Operation lineage</h3>
+              {#if lineageOperations.length > 0}
+                <ul class="integrity-ops-list">
+                  {#each lineageOperations as item (item.id)}
+                    <li>
+                      <strong>{item.toolKey}</strong>
+                      <span>{item.action}</span>
+                      <span>{fmtDate(item.at)}</span>
+                      <span>{item.outputCount} output(s)</span>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="fv-empty">No prior processing lineage found for this file.</p>
+              {/if}
+            {:else}
+              <p class="fv-empty">Integrity report not available.</p>
+            {/if}
           </div>
         {/if}
 
@@ -985,6 +1198,79 @@
   }
 
   .fv-link:hover { text-decoration: underline; }
+
+  .entropy-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.7rem;
+  }
+
+  .entropy-controls label {
+    font-size: 0.82rem;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .entropy-controls select {
+    min-width: 160px;
+  }
+
+  .entropy-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    margin-bottom: 0.7rem;
+  }
+
+  .entropy-stats span {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background: var(--md-sys-color-surface-container-low);
+    border-radius: 999px;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.75rem;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .integrity-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    margin-bottom: 0.7rem;
+  }
+
+  .integrity-preview {
+    margin: 0;
+    padding: 0.7rem;
+    border-radius: 10px;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background: var(--md-sys-color-surface-container-low);
+    max-height: 280px;
+    overflow: auto;
+    white-space: pre-wrap;
+    line-height: 1.42;
+    font-size: 0.76rem;
+  }
+
+  .integrity-ops-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.45rem;
+  }
+
+  .integrity-ops-list li {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background: var(--md-sys-color-surface-container-low);
+    border-radius: 10px;
+    padding: 0.45rem 0.6rem;
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    color: var(--md-sys-color-on-surface-variant);
+  }
 
   /* ── Responsive ──────────────────────────────────────────────────────── */
   @media (max-width: 740px) {

@@ -1,5 +1,6 @@
 <script>
   import { createEventDispatcher } from "svelte";
+
   export let route = "empty";
   export let processing = false;
 
@@ -14,15 +15,15 @@
     mixed: "Mixed files"
   };
 
-  let resetting = false;
+  let clearingSecurely = false;
 
-  async function handleReset() {
-    if (resetting) return;
-    resetting = true;
+  async function handleSecureClear() {
+    if (clearingSecurely) return;
+    clearingSecurely = true;
     try {
-      await dispatch("reset");
+      await dispatch("secureclear");
     } finally {
-      resetting = false;
+      clearingSecurely = false;
     }
   }
 </script>
@@ -40,8 +41,13 @@
   </div>
   <div class="toolbar-actions">
     <button class="secondary" disabled={processing} on:click={() => dispatch("clear")}>Clear</button>
-    <button class="secondary danger" disabled={processing || resetting} on:click={handleReset} title="Clear all app data, caches and service workers">
-      {resetting ? "Resetting…" : "Reset app"}
+    <button
+      class="secondary danger"
+      disabled={processing || clearingSecurely}
+      on:click={handleSecureClear}
+      title="Securely clear Upkaran local browser data (memory, storage, cache, and service workers)"
+    >
+      {clearingSecurely ? "Clearing..." : "Wipe/Shred Local Data"}
     </button>
   </div>
 </nav>
@@ -61,7 +67,6 @@
     gap: 0.55rem;
   }
 
-  /* Idle dot */
   .status-dot {
     width: 8px;
     height: 8px;
@@ -70,7 +75,6 @@
     flex-shrink: 0;
   }
 
-  /* 3-dot spinner */
   .spinner {
     display: flex;
     align-items: center;

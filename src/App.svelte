@@ -4,9 +4,26 @@
   import Dropzone from "./components/Dropzone.svelte";
   import FileList from "./components/FileList.svelte";
   import Toolbar from "./components/Toolbar.svelte";
+  import InstallCta from "./components/InstallCta.svelte";
+  import RecentActivity from "./components/RecentActivity.svelte";
+  import PerfSummaryPanel from "./components/PerfSummaryPanel.svelte";
+  import BatchOperations from "./components/BatchOperations.svelte";
+  import CompareWorkspace from "./components/CompareWorkspace.svelte";
   import { resolveRouteFromSelection, resolveRoute, ROUTES } from "./routes/router.js";
   import { enrichFiles } from "./js/detect.js";
   import { addResults, clearResults } from "./js/results-store.js";
+  import { decideDropRouting } from "./js/drop-routing.js";
+  import {
+    addSessionHistory,
+    clearSessionHistory,
+    getLastUsedTool,
+    getSessionHistory,
+    setLastUsedTool,
+    summarizeEntriesForHistory
+  } from "./js/session-history.js";
+  import { createPwaInstallController } from "./js/pwa-install.js";
+  import { secureClearLocalAppData } from "./js/secure-local-data.js";
+  import { addOperationLineage } from "./js/operation-lineage.js";
 
   let entries = [];
   let selectedFiles = [];
@@ -66,6 +83,15 @@
   let featureOverviewCollapsed = false;
   let p2pOpen = false;
 
+  let recentActivity = [];
+  let recentLastTool = "";
+  let lastTrackedTool = "";
+
+  let pwaInstallBusy = false;
+  let canInstallPwa = false;
+  let pwaInstalled = false;
+  let pwaControllerRef = null;
+
   const THEME_OPTIONS = [
     { value: "ocean", label: "Ocean" },
     { value: "forest", label: "Forest" },
@@ -80,6 +106,7 @@
 
   let currentTheme = "ocean";
   let colorMode = "light";
+  const perfPanelEnabled = import.meta.env.DEV;
 
   function applyAppearance() {
     if (typeof document === "undefined") return;
@@ -121,13 +148,34 @@
       colorMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     }
 
+    recentActivity = getSessionHistory();
+    recentLastTool = getLastUsedTool();
+
+    pwaControllerRef = createPwaInstallController();
+    const unsubscribeInstall = pwaControllerRef.subscribe((snapshot) => {
+      canInstallPwa = snapshot.canInstall;
+      pwaInstalled = snapshot.installed;
+    });
+
     applyAppearance();
+
+    return () => {
+      unsubscribeInstall?.();
+      pwaControllerRef?.dispose();
+      pwaControllerRef = null;
+    };
   });
 
   $: {
     currentTheme;
     colorMode;
     applyAppearance();
+  }
+
+  $: if (route !== ROUTES.EMPTY && route !== ROUTES.MIXED && route !== lastTrackedTool) {
+    lastTrackedTool = route;
+    setLastUsedTool(route);
+    recentLastTool = route;
   }
 
   const featureGroups = [
@@ -220,6 +268,8 @@
   $: effectivePdfFiles = effectiveFiles.filter((entry) => entry.kind === "pdf");
   $: effectiveImageFiles = effectiveFiles.filter((entry) => entry.kind === "image");
   $: effectiveContentFiles = effectiveFiles.filter((entry) => entry.kind === "document" || entry.kind === "data" || entry.kind === "code");
+  $: batchEligibleFiles = route === ROUTES.PDF ? effectivePdfFiles : route === ROUTES.IMAGE ? effectiveImageFiles : [];
+  $: compareWorkspaceFiles = route === ROUTES.CONTENT && effectiveContentFiles.length === 2 ? effectiveContentFiles : [];
 
   $: if (baseRoute === ROUTES.MIXED && modalSelectedFiles.length === 0) {
     mixedModalOpen = true;
@@ -239,14 +289,43 @@
     p2pOpen = true;
   }
 
+  function recordActivity(payload) {
+    recentActivity = addSessionHistory(payload);
+  }
+
   function onFilesAdded(files) {
     error = "";
     progress = 0;
-    entries = enrichFiles(files);
+
+    const enriched = enrichFiles(files);
+    entries = enriched;
     featureOverviewCollapsed = true;
-    selectedFiles = [];
-    modalSelectedIds = [];
-    modalError = "";
+
+    const dropDecision = decideDropRouting(enriched);
+    if (dropDecision.autoSelected && dropDecision.selectedEntries.length > 0 && dropDecision.skippedCount > 0) {
+      selectedFiles = dropDecision.selectedEntries;
+      modalSelectedIds = dropDecision.selectedEntries.map((entry) => entry.id);
+      modalError = "";
+      mixedModalOpen = false;
+      showToast({
+        message: `Auto-selected ${dropDecision.selectedEntries.length} ${dropDecision.route} file(s) from mixed drop`,
+        type: "success"
+      });
+    } else {
+      selectedFiles = [];
+      modalSelectedIds = [];
+      modalError = "";
+    }
+
+    const summary = summarizeEntriesForHistory(enriched);
+    recordActivity({
+      action: "Files added",
+      toolKey: dropDecision.route,
+      fileCount: summary.fileCount,
+      fileNames: summary.fileNames,
+      note: "Drop or picker import"
+    });
+
     notifyFilesAdded(files.length);
   }
 
@@ -256,6 +335,16 @@
     const enriched = enrichFiles(newFiles);
     entries = [...enriched, ...entries];
     featureOverviewCollapsed = true;
+
+    const summary = summarizeEntriesForHistory(enriched);
+    recordActivity({
+      action: "P2P receive",
+      toolKey: route,
+      fileCount: summary.fileCount,
+      fileNames: summary.fileNames,
+      note: "Received through peer transfer"
+    });
+
     notifyFilesAdded(newFiles.length);
   }
 
@@ -265,6 +354,16 @@
     const enriched = enrichFiles(newFiles);
     entries = [...enriched, ...entries];
     featureOverviewCollapsed = true;
+
+    const summary = summarizeEntriesForHistory(enriched);
+    recordActivity({
+      action: "Workspace output",
+      toolKey: route,
+      fileCount: summary.fileCount,
+      fileNames: summary.fileNames,
+      note: "Created by editor workspace"
+    });
+
     notifyFilesAdded(newFiles.length);
   }
 
@@ -275,6 +374,21 @@
   function openPickerFromFeature(group) {
     pickerAccept = group.pickerAccept || "";
     dropzoneRef?.openPicker();
+  }
+
+  async function onInstallApp() {
+    if (!pwaControllerRef) return;
+    pwaInstallBusy = true;
+    try {
+      const choice = await pwaControllerRef.promptInstall();
+      if (choice?.outcome === "accepted") {
+        showToast({ message: "Install prompt accepted", type: "success" });
+      } else if (choice?.outcome === "dismissed") {
+        showToast({ message: "Install prompt dismissed", type: "error" });
+      }
+    } finally {
+      pwaInstallBusy = false;
+    }
   }
 
   function onFileSelectionChange(event) {
@@ -329,38 +443,19 @@
     clearResults();
   }
 
-  async function resetApp() {
-    // Unregister all service workers
-    if ("serviceWorker" in navigator) {
-      const registrations = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(registrations.map((r) => r.unregister()));
-    }
+  function clearRecentActivity() {
+    clearSessionHistory();
+    recentActivity = [];
+    recentLastTool = "";
+  }
 
-    // Delete all Cache API caches
-    if ("caches" in window) {
-      const keys = await caches.keys();
-      await Promise.all(keys.map((k) => caches.delete(k)));
-    }
-
-    // Clear Web Storage
-    try { localStorage.clear(); } catch { /* ignore */ }
-    try { sessionStorage.clear(); } catch { /* ignore */ }
-
-    // Delete all IndexedDB databases
-    if (indexedDB.databases) {
-      const dbs = await indexedDB.databases();
-      await Promise.all(dbs.map((db) => new Promise((resolve) => {
-        const req = indexedDB.deleteDatabase(db.name);
-        req.onsuccess = resolve;
-        req.onerror = resolve;
-        req.onblocked = resolve;
-      })));
-    }
-
-    // Clear in-memory state last
+  async function secureClearData() {
+    await secureClearLocalAppData();
+    clearSessionHistory();
     clearAll();
-
-    // Reload to a clean slate
+    recentActivity = [];
+    recentLastTool = "";
+    showToast({ message: "Secure local cleanup complete. Reloading...", type: "success" });
     window.location.reload();
   }
 
@@ -378,6 +473,27 @@
     addResults(event.detail);
     resultsBatch++;
     const n = items.length;
+
+    if (effectiveFiles.length > 0 && n >= 0) {
+      addOperationLineage({
+        toolKey: route,
+        action: "tool_output",
+        inputEntries: effectiveFiles,
+        outputs: items,
+      });
+    }
+
+    if (effectiveFiles.length > 0 || n > 0) {
+      recordActivity({
+        action: "Processing completed",
+        toolKey: route,
+        fileCount: effectiveFiles.length,
+        outputCount: n,
+        fileNames: effectiveFiles.slice(0, 5).map((entry) => entry.name),
+        note: "Tool output generated"
+      });
+    }
+
     if (n > 0) {
       showToast({
         message: `${n} file${n === 1 ? "" : "s"} ready`,
@@ -454,9 +570,15 @@
     </div>
   </section>
 
-  <Toolbar route={route} processing={processing} on:clear={clearAll} on:reset={resetApp} />
+  <Toolbar route={route} processing={processing} on:clear={clearAll} on:secureclear={secureClearData} />
+
+  <InstallCta canInstall={canInstallPwa} installed={pwaInstalled} busy={pwaInstallBusy} on:install={onInstallApp} />
 
   <Dropzone bind:this={dropzoneRef} accept={pickerAccept} on:filesadded={(event) => onFilesAdded(event.detail)} />
+
+  <RecentActivity items={recentActivity} lastTool={recentLastTool} on:clear={clearRecentActivity} />
+
+  <PerfSummaryPanel enabled={perfPanelEnabled} />
 
   <section class="panel feature-overview" transition:fade>
     <header class="feature-overview-header">
@@ -642,6 +764,21 @@
           on:output={onOutput}
         />
       {/await}
+    {/if}
+
+    {#if compareWorkspaceFiles.length === 2}
+      <CompareWorkspace files={compareWorkspaceFiles} />
+    {/if}
+
+    {#if batchEligibleFiles.length > 1}
+      <BatchOperations
+        files={batchEligibleFiles}
+        busy={processing}
+        on:processing={(event) => (processing = event.detail)}
+        on:progress={onProgress}
+        on:error={onError}
+        on:output={onOutput}
+      />
     {/if}
     {/if}
   </div>
