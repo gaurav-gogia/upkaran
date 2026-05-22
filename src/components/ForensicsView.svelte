@@ -183,6 +183,13 @@
         status: record.status || "completed",
         note: record.outputCount > 0 ? `${record.outputCount} output(s)` : "No outputs",
         at: record.at,
+        outputs: Array.isArray(record.outputs)
+          ? record.outputs.map((item) => ({
+            name: item?.name || "output",
+            size: item?.size || 0,
+            mimeType: item?.mimeType || "application/octet-stream",
+          }))
+          : [],
       }))
       : [
         {

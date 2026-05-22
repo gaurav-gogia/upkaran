@@ -566,18 +566,6 @@
     flex-wrap: wrap;
   }
 
-  .code-join-box {
-    border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 10px;
-    padding: 0.55rem 0.65rem;
-    display: flex;
-    justify-content: space-between;
-    align-items: end;
-    gap: 0.65rem;
-    flex-wrap: wrap;
-    background: var(--md-sys-color-surface-container);
-  }
-
   /* Hero code entry */
   .code-hero-block {
     display: grid;
@@ -650,14 +638,6 @@
 
   .fallback-details > :not(summary) {
     margin-top: 0.65rem;
-  }
-
-  .code-label {
-    margin: 0;
-    font-size: 0.72rem;
-    color: var(--md-sys-color-on-surface-variant);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
   }
 
   .scan-file-input {

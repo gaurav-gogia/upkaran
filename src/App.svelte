@@ -104,6 +104,7 @@
   let dropzoneRef;
   let pickerAccept = "";
   let featureOverviewCollapsed = false;
+  let topViewTab = "appearance";
   let p2pOpen = false;
   let p2pMode = "send";
   let p2pPanelRef;
@@ -306,6 +307,10 @@
     modalSelectedIds = [];
   }
 
+  $: if (!perfPanelEnabled && topViewTab === "performance") {
+    topViewTab = "appearance";
+  }
+
   async function toggleP2P() {
     p2pOpen = !p2pOpen;
     if (p2pOpen) {
@@ -354,6 +359,11 @@
       toolKey: dropDecision.route,
       fileCount: summary.fileCount,
       fileNames: summary.fileNames,
+      totalBytes: summary.totalBytes,
+      kindBreakdown: summary.kindBreakdown,
+      routeSnapshot: dropDecision.route,
+      source: "dropzone",
+      evidenceTag: "ingest",
       note: "Drop or picker import"
     });
 
@@ -380,6 +390,11 @@
       toolKey: route,
       fileCount: summary.fileCount,
       fileNames: summary.fileNames,
+      totalBytes: summary.totalBytes,
+      kindBreakdown: summary.kindBreakdown,
+      routeSnapshot: route,
+      source: "p2p",
+      evidenceTag: "transfer",
       note: "Received through peer transfer"
     });
 
@@ -403,6 +418,11 @@
       toolKey: route,
       fileCount: summary.fileCount,
       fileNames: summary.fileNames,
+      totalBytes: summary.totalBytes,
+      kindBreakdown: summary.kindBreakdown,
+      routeSnapshot: route,
+      source: "workspace",
+      evidenceTag: "generated",
       note: "Created by editor workspace"
     });
 
@@ -507,6 +527,19 @@
 
   function onError(event) {
     error = event.detail;
+    recordActivity({
+      action: "Processing error",
+      toolKey: route,
+      routeSnapshot: route,
+      source: "tooling",
+      evidenceTag: "pipeline",
+      fileCount: effectiveFiles.length,
+      fileNames: effectiveFiles.slice(0, 5).map((entry) => entry.name),
+      totalBytes: effectiveFiles.reduce((sum, entry) => sum + (entry.size || 0), 0),
+      kindBreakdown: summarizeEntriesForHistory(effectiveFiles).kindBreakdown,
+      note: event.detail || "Operation failed",
+      investigation: { stage: "error-path" },
+    });
     showToast({ message: event.detail || "Operation failed", type: "error", duration: 7000 });
   }
 
@@ -526,12 +559,19 @@
     }
 
     if (effectiveFiles.length > 0 || n > 0) {
+      const summary = summarizeEntriesForHistory(effectiveFiles);
       recordActivity({
         action: "Processing completed",
         toolKey: route,
         fileCount: effectiveFiles.length,
         outputCount: n,
         fileNames: effectiveFiles.slice(0, 5).map((entry) => entry.name),
+        outputNames: items.slice(0, 8).map((item) => item?.name).filter(Boolean),
+        totalBytes: summary.totalBytes,
+        kindBreakdown: summary.kindBreakdown,
+        routeSnapshot: route,
+        source: "tooling",
+        evidenceTag: "pipeline",
         note: "Tool output generated"
       });
     }
@@ -578,61 +618,99 @@
     </button>
   {/if}
 
-  <section class="panel appearance-strip" aria-label="Appearance">
-    <div class="appearance-title-wrap">
-      <h2 class="appearance-title">Appearance</h2>
-      <span class="appearance-current">{THEME_OPTIONS.find((t) => t.value === currentTheme)?.label} · {colorMode}</span>
-    </div>
-
-    <div class="appearance-controls" role="group" aria-label="Appearance controls">
-      <label for="theme-select">Theme</label>
-      <select id="theme-select" bind:value={currentTheme} aria-label="Select theme">
-        {#each THEME_OPTIONS as option}
-          <option value={option.value}>{option.label}</option>
-        {/each}
-      </select>
-
-      <div class="theme-swatches" role="radiogroup" aria-label="Quick theme selection">
-        {#each PREVIEW_THEME_OPTIONS as option}
-          <button
-            class="secondary theme-swatch"
-            class:is-active={currentTheme === option.value}
-            type="button"
-            role="radio"
-            aria-checked={currentTheme === option.value}
-            aria-label={`Use ${option.label} theme`}
-            title={option.label}
-            on:click={() => setTheme(option.value)}
-          >
-            <span class="swatch-dot swatch-{option.value}" aria-hidden="true"></span>
-          </button>
-        {/each}
-      </div>
-
+  <section class="panel top-view-tabs" aria-label="Top views">
+    <div class="top-view-tablist" role="tablist" aria-label="Top view navigation">
       <button
-        class="secondary mode-toggle"
         type="button"
-        on:click={toggleColorMode}
-        aria-pressed={colorMode === "dark"}
-        aria-label={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        role="tab"
+        class="secondary top-view-tab"
+        class:is-active={topViewTab === "appearance"}
+        aria-selected={topViewTab === "appearance"}
+        on:click={() => (topViewTab = "appearance")}
       >
-        <span class="material-symbols-outlined" aria-hidden="true">
-          {colorMode === "dark" ? "light_mode" : "dark_mode"}
-        </span>
-        {colorMode === "dark" ? "Light mode" : "Dark mode"}
+        Appearance
+      </button>
+      <button
+        type="button"
+        role="tab"
+        class="secondary top-view-tab"
+        class:is-active={topViewTab === "activity"}
+        aria-selected={topViewTab === "activity"}
+        on:click={() => (topViewTab = "activity")}
+      >
+        Recent Activity
+      </button>
+      <button
+        type="button"
+        role="tab"
+        class="secondary top-view-tab"
+        class:is-active={topViewTab === "performance"}
+        aria-selected={topViewTab === "performance"}
+        on:click={() => (topViewTab = "performance")}
+        disabled={!perfPanelEnabled}
+      >
+        Performance
       </button>
     </div>
   </section>
+
+  {#if topViewTab === "appearance"}
+    <section class="panel appearance-strip" aria-label="Appearance">
+      <div class="appearance-title-wrap">
+        <h2 class="appearance-title">Appearance</h2>
+        <span class="appearance-current">{THEME_OPTIONS.find((t) => t.value === currentTheme)?.label} · {colorMode}</span>
+      </div>
+
+      <div class="appearance-controls" role="group" aria-label="Appearance controls">
+        <label for="theme-select">Theme</label>
+        <select id="theme-select" bind:value={currentTheme} aria-label="Select theme">
+          {#each THEME_OPTIONS as option}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+
+        <div class="theme-swatches" role="radiogroup" aria-label="Quick theme selection">
+          {#each PREVIEW_THEME_OPTIONS as option}
+            <button
+              class="secondary theme-swatch"
+              class:is-active={currentTheme === option.value}
+              type="button"
+              role="radio"
+              aria-checked={currentTheme === option.value}
+              aria-label={`Use ${option.label} theme`}
+              title={option.label}
+              on:click={() => setTheme(option.value)}
+            >
+              <span class="swatch-dot swatch-{option.value}" aria-hidden="true"></span>
+            </button>
+          {/each}
+        </div>
+
+        <button
+          class="secondary mode-toggle"
+          type="button"
+          on:click={toggleColorMode}
+          aria-pressed={colorMode === "dark"}
+          aria-label={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">
+            {colorMode === "dark" ? "light_mode" : "dark_mode"}
+          </span>
+          {colorMode === "dark" ? "Light mode" : "Dark mode"}
+        </button>
+      </div>
+    </section>
+  {:else if topViewTab === "activity"}
+    <RecentActivity items={recentActivity} lastTool={recentLastTool} on:clear={clearRecentActivity} />
+  {:else if topViewTab === "performance"}
+    <PerfSummaryPanel enabled={perfPanelEnabled} />
+  {/if}
 
   <Toolbar route={route} processing={processing} on:clear={clearAll} on:secureclear={secureClearData} />
 
   <InstallCta canInstall={canInstallPwa} installed={pwaInstalled} busy={pwaInstallBusy} on:install={onInstallApp} />
 
   <Dropzone bind:this={dropzoneRef} accept={pickerAccept} on:filesadded={(event) => onFilesAdded(event.detail)} />
-
-  <RecentActivity items={recentActivity} lastTool={recentLastTool} on:clear={clearRecentActivity} />
-
-  <PerfSummaryPanel enabled={perfPanelEnabled} />
 
   <section class="panel feature-overview" transition:fade>
     <header class="feature-overview-header">
@@ -1011,6 +1089,28 @@
   .hero p {
     margin: 0.45rem 0 0;
     color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .top-view-tabs {
+    padding: 0.55rem 0.7rem;
+  }
+
+  .top-view-tablist {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+  }
+
+  .top-view-tab {
+    font-size: 0.8rem;
+    padding: 0.42rem 0.78rem;
+  }
+
+  .top-view-tab.is-active {
+    background: color-mix(in srgb, var(--theme-accent) 18%, var(--md-sys-color-surface-container));
+    border-color: color-mix(in srgb, var(--theme-accent) 35%, var(--md-sys-color-outline-variant));
+    color: var(--md-sys-color-on-surface);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-accent) 28%, transparent);
   }
 
   .appearance-strip {
@@ -1424,6 +1524,17 @@
     .hero-actions {
       width: 100%;
       justify-items: stretch;
+    }
+
+    .top-view-tablist {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.4rem;
+    }
+
+    .top-view-tab {
+      width: 100%;
+      justify-content: center;
     }
 
     .appearance-strip {

@@ -21,9 +21,16 @@
     { value: 0.55, label: "Compact" },
   ];
 
+  const PDF_IMAGE_FORMAT_OPTIONS = [
+    { value: "png", label: "PNG" },
+    { value: "jpeg", label: "JPEG" },
+    { value: "webp", label: "WEBP" },
+  ];
+
   let selectedOperation = "";
   let imageMode = "balanced";
   let pdfQuality = 0.75;
+  let pdfImageFormat = "png";
   let rows = [];
   let running = false;
   let progress = 0;
@@ -37,7 +44,10 @@
     }
 
     if (kind === "pdf") {
-      return [{ id: BATCH_OPERATION_IDS.PDF_COMPRESS, label: "Compress PDFs" }];
+      return [
+        { id: BATCH_OPERATION_IDS.PDF_COMPRESS, label: "Compress PDFs" },
+        { id: BATCH_OPERATION_IDS.PDF_TO_IMAGES, label: "PDF to images" },
+      ];
     }
 
     return [];
@@ -108,6 +118,7 @@
         runBatchOperation(files, selectedOperation, {
           imageMode,
           pdfQuality,
+          pdfImageFormat,
           onProgress(nextProgress) {
             progress = nextProgress;
             dispatch("progress", nextProgress);
@@ -206,6 +217,15 @@
       <label for="batch-pdf-quality">PDF quality</label>
       <select id="batch-pdf-quality" bind:value={pdfQuality} disabled={busy || running}>
         {#each PDF_QUALITY_OPTIONS as option}
+          <option value={option.value}>{option.label}</option>
+        {/each}
+      </select>
+    {/if}
+
+    {#if selectedOperation === BATCH_OPERATION_IDS.PDF_TO_IMAGES}
+      <label for="batch-pdf-image-format">Image format</label>
+      <select id="batch-pdf-image-format" bind:value={pdfImageFormat} disabled={busy || running}>
+        {#each PDF_IMAGE_FORMAT_OPTIONS as option}
           <option value={option.value}>{option.label}</option>
         {/each}
       </select>

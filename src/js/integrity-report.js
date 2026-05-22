@@ -8,6 +8,13 @@ function normalizeOperations(operations = []) {
     status: item?.status || "completed",
     note: item?.note || "",
     at: item?.at || new Date().toISOString(),
+    outputs: Array.isArray(item?.outputs)
+      ? item.outputs.map((output) => ({
+        name: output?.name || "output",
+        size: Number(output?.size) || 0,
+        mimeType: output?.mimeType || "application/octet-stream",
+      }))
+      : [],
   }));
 }
 
@@ -120,7 +127,13 @@ export function integrityReportToText(report) {
 
   lines.push("", "Operations:");
   for (const op of operations) {
+    const outputs = Array.isArray(op?.outputs) ? op.outputs : [];
     lines.push(`- ${op.action} [${op.status}]${op.note ? ` - ${op.note}` : ""}`);
+    if (outputs.length > 0) {
+      for (const output of outputs) {
+        lines.push(`  - output: ${output.name} (${output.size} bytes, ${output.mimeType})`);
+      }
+    }
   }
 
   return lines.join("\n");

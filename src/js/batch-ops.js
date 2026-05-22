@@ -1,9 +1,11 @@
 import { compressImage } from "./image-tools.js";
 import { compressPdf } from "./pdf-tools.js";
+import { pdfToImages } from "./pdf-tools.js";
 
 export const BATCH_OPERATION_IDS = {
   IMAGE_COMPRESS: "image_compress",
   PDF_COMPRESS: "pdf_compress",
+  PDF_TO_IMAGES: "pdf_to_images",
 };
 
 function toSafeProgress(value) {
@@ -111,6 +113,45 @@ async function runPdfCompressBatch(entries, options) {
   return { outputs, items };
 }
 
+async function runPdfToImagesBatch(entries, options) {
+  const {
+    pdfImageFormat = "png",
+    onProgress = () => {},
+    onItemUpdate = () => {},
+  } = options;
+
+  const outputs = [];
+  const items = [];
+
+  for (let i = 0; i < entries.length; i += 1) {
+    const entry = entries[i];
+    onItemUpdate({ id: entry.id, status: "running", index: i });
+
+    try {
+      const pageImages = await pdfToImages(entry, pdfImageFormat, (fileProgress) => {
+        updateOverallProgress(i, entries.length, fileProgress, onProgress);
+      });
+
+      outputs.push(...pageImages);
+      items.push({ id: entry.id, status: "success", outputName: `${pageImages.length} image file${pageImages.length === 1 ? "" : "s"}` });
+      onItemUpdate({
+        id: entry.id,
+        status: "success",
+        outputName: `${pageImages.length} image file${pageImages.length === 1 ? "" : "s"}`,
+        index: i,
+      });
+    } catch (error) {
+      const message = error?.message || "PDF to images conversion failed";
+      items.push({ id: entry.id, status: "error", error: message });
+      onItemUpdate({ id: entry.id, status: "error", error: message, index: i });
+    }
+
+    updateOverallProgress(i + 1, entries.length, 0, onProgress);
+  }
+
+  return { outputs, items };
+}
+
 export async function runBatchOperation(entries, operation, options = {}) {
   if (!Array.isArray(entries) || entries.length === 0) {
     return { outputs: [], items: [] };
@@ -123,6 +164,10 @@ export async function runBatchOperation(entries, operation, options = {}) {
 
   if (op === BATCH_OPERATION_IDS.PDF_COMPRESS) {
     return runPdfCompressBatch(entries, options);
+  }
+
+  if (op === BATCH_OPERATION_IDS.PDF_TO_IMAGES) {
+    return runPdfToImagesBatch(entries, options);
   }
 
   throw new Error(`Unsupported batch operation: ${op}`);
