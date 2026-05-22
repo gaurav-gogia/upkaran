@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { fade, fly } from "svelte/transition";
   import Dropzone from "./components/Dropzone.svelte";
   import FileList from "./components/FileList.svelte";
@@ -68,6 +68,29 @@
     document.getElementById("files-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  function scrollToP2P() {
+    p2pPanelRef?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function getFileFingerprint(file) {
+    return `${file.name}::${file.size}::${file.type || ""}::${file.lastModified || 0}`;
+  }
+
+  function dedupeIncomingP2PFiles(files) {
+    const existing = new Set(entries.map((entry) => getFileFingerprint(entry.file)));
+    const seenIncoming = new Set();
+    const unique = [];
+
+    for (const file of files) {
+      const fingerprint = getFileFingerprint(file);
+      if (existing.has(fingerprint) || seenIncoming.has(fingerprint)) continue;
+      seenIncoming.add(fingerprint);
+      unique.push(file);
+    }
+
+    return unique;
+  }
+
   function notifyFilesAdded(count) {
     if (!count || count <= 0) return;
     showToast({
@@ -82,6 +105,8 @@
   let pickerAccept = "";
   let featureOverviewCollapsed = false;
   let p2pOpen = false;
+  let p2pMode = "send";
+  let p2pPanelRef;
 
   let recentActivity = [];
   let recentLastTool = "";
@@ -281,12 +306,18 @@
     modalSelectedIds = [];
   }
 
-  function toggleP2P() {
+  async function toggleP2P() {
     p2pOpen = !p2pOpen;
+    if (p2pOpen) {
+      await tick();
+      p2pPanelRef?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   }
 
-  function openP2PFromCard() {
+  async function openP2PFromCard() {
     p2pOpen = true;
+    await tick();
+    p2pPanelRef?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function recordActivity(payload) {
@@ -330,9 +361,16 @@
   }
 
   function onP2PFilesReceived(event) {
-    const newFiles = event.detail;
-    if (!newFiles || newFiles.length === 0) return;
-    const enriched = enrichFiles(newFiles);
+    const newFiles = event.detail || [];
+    if (newFiles.length === 0) return;
+
+    const uniqueFiles = dedupeIncomingP2PFiles(newFiles);
+    if (uniqueFiles.length === 0) {
+      showToast({ message: "No new files were added (duplicates skipped)", type: "error" });
+      return;
+    }
+
+    const enriched = enrichFiles(uniqueFiles);
     entries = [...enriched, ...entries];
     featureOverviewCollapsed = true;
 
@@ -345,7 +383,11 @@
       note: "Received through peer transfer"
     });
 
-    notifyFilesAdded(newFiles.length);
+    notifyFilesAdded(uniqueFiles.length);
+  }
+
+  function onP2PModeChange(event) {
+    p2pMode = event.detail === "receive" ? "receive" : "send";
   }
 
   function onWorkspaceFiles(event) {
@@ -518,11 +560,23 @@
       <h1>Upkaran Offline Suite</h1>
       <p>PDF, image, and file operations with zero backend and full offline capability.</p>
     </div>
-    <button class="p2p-btn" type="button" on:click={toggleP2P} aria-expanded={p2pOpen}>
+    <button class="p2p-btn" class:is-active={p2pOpen} type="button" on:click={toggleP2P} aria-expanded={p2pOpen} aria-pressed={p2pOpen}>
       <span class="material-symbols-outlined">wifi_tethering</span>
-      P2P Transfer
+      {p2pOpen ? "P2P Transfer Active" : "P2P Transfer"}
     </button>
   </header>
+
+  {#if p2pOpen}
+    <section class="panel p2p-active-banner" aria-live="polite">
+      <span class="material-symbols-outlined" aria-hidden="true">wifi_tethering</span>
+      <p>P2P transfer is currently open below. Use <strong>Send</strong> or <strong>Receive</strong> to continue.</p>
+    </section>
+
+    <button class="p2p-live-chip" type="button" on:click={scrollToP2P} aria-label={`P2P ${p2pMode} mode is active. Jump to P2P transfer panel.`}>
+      <span class="material-symbols-outlined" aria-hidden="true">wifi_tethering</span>
+      <span>P2P Active · {p2pMode === "send" ? "Send" : "Receive"}</span>
+    </button>
+  {/if}
 
   <section class="panel appearance-strip" aria-label="Appearance">
     <div class="appearance-title-wrap">
@@ -618,9 +672,9 @@
   </section>
 
   {#if p2pOpen}
-    <div transition:fade>
+    <div bind:this={p2pPanelRef} class="p2p-panel-wrap" transition:fade>
       {#await import("./components/P2PTransfer.svelte") then mod}
-        <svelte:component this={mod.default} {entries} on:filesreceived={onP2PFilesReceived} />
+        <svelte:component this={mod.default} {entries} on:filesreceived={onP2PFilesReceived} on:modechange={onP2PModeChange} />
       {/await}
     </div>
   {/if}
@@ -1074,6 +1128,60 @@
     padding: 0.5rem 1rem;
     flex-shrink: 0;
     font-size: 0.88rem;
+    transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease;
+  }
+
+  .p2p-btn.is-active {
+    background: color-mix(in srgb, var(--md-sys-color-tertiary-container) 82%, var(--theme-accent) 18%);
+    color: var(--md-sys-color-on-tertiary-container);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--md-sys-color-tertiary) 25%, transparent);
+  }
+
+  .p2p-btn.is-active .material-symbols-outlined {
+    animation: p2p-pulse 1.2s ease-in-out infinite;
+  }
+
+  .p2p-active-banner {
+    margin-top: -0.1rem;
+    padding: 0.62rem 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    border-left: 4px solid var(--md-sys-color-tertiary);
+    background: color-mix(in srgb, var(--md-sys-color-tertiary-container) 65%, var(--md-sys-color-surface) 35%);
+  }
+
+  .p2p-active-banner p {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--md-sys-color-on-tertiary-container);
+  }
+
+  .p2p-panel-wrap {
+    scroll-margin-top: 0.85rem;
+  }
+
+  .p2p-live-chip {
+    position: fixed;
+    top: 0.65rem;
+    right: 1rem;
+    z-index: 9055;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.45rem 0.72rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-tertiary) 30%, transparent);
+    background: color-mix(in srgb, var(--md-sys-color-tertiary-container) 84%, var(--theme-accent) 16%);
+    color: var(--md-sys-color-on-tertiary-container);
+    box-shadow: 0 6px 20px color-mix(in srgb, var(--md-sys-color-shadow, #000) 22%, transparent);
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+
+  .p2p-live-chip .material-symbols-outlined {
+    font-size: 0.95rem;
+    animation: p2p-pulse 1.2s ease-in-out infinite;
   }
 
   .fallback-resources {
@@ -1349,6 +1457,16 @@
       justify-content: center;
     }
 
+    .p2p-active-banner {
+      align-items: flex-start;
+    }
+
+    .p2p-live-chip {
+      top: auto;
+      bottom: 1rem;
+      right: 1rem;
+    }
+
     .feature-overview {
       padding: 0.85rem;
     }
@@ -1441,6 +1559,11 @@
   @keyframes app-state-flow {
     0% { background-position: 100% 0; }
     100% { background-position: -100% 0; }
+  }
+
+  @keyframes p2p-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.7; transform: scale(1.09); }
   }
 
 

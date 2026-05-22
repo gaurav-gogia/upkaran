@@ -40,6 +40,15 @@
   let joinError = "";
   let activeSignalCode = "";
 
+  function getFileFingerprint(file) {
+    return `${file.name}::${file.size}::${file.type || ""}::${file.lastModified || 0}`;
+  }
+
+  function hasReceivedFile(file) {
+    const fingerprint = getFileFingerprint(file);
+    return receivedFiles.some((entry) => getFileFingerprint(entry.file) === fingerprint);
+  }
+
   // ── QR helpers ────────────────────────────────────────────────────────────
 
   async function renderQr(canvas, text) {
@@ -92,6 +101,9 @@
       progressSize = info.size;
     });
     session.onFileReceived(({ file, hashMatch }) => {
+      if (hasReceivedFile(file)) {
+        return;
+      }
       receivedFiles = [...receivedFiles, { file, hashMatch }];
       if (!hashMatch) {
         console.warn(`Hash mismatch for ${file.name} — file may be corrupt.`);
@@ -244,7 +256,16 @@
   // ── Deliver received files to parent ─────────────────────────────────────
 
   function addToFileList() {
-    dispatch("filesreceived", receivedFiles.map((r) => r.file));
+    const uniqueFiles = [];
+    const seen = new Set();
+    for (const item of receivedFiles) {
+      const fingerprint = getFileFingerprint(item.file);
+      if (seen.has(fingerprint)) continue;
+      seen.add(fingerprint);
+      uniqueFiles.push(item.file);
+    }
+
+    dispatch("filesreceived", uniqueFiles);
     step = "done-added";
   }
 

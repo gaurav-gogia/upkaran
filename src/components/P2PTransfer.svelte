@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from "svelte";
   import { createEventDispatcher } from "svelte";
   import P2PSend from "./P2PSend.svelte";
   import P2PReceive from "./P2PReceive.svelte";
@@ -22,6 +23,16 @@
   function handleFilesReceived(event) {
     dispatch("filesreceived", event.detail);
   }
+
+  function setMode(nextMode) {
+    if (mode === nextMode) return;
+    mode = nextMode;
+    dispatch("modechange", mode);
+  }
+
+  onMount(() => {
+    dispatch("modechange", mode);
+  });
 
   function saveTurnSettings() {
     turnSaveError = "";
@@ -84,7 +95,7 @@
         role="tab"
         type="button"
         class:active={mode === "send"}
-        on:click={() => (mode = "send")}
+        on:click={() => setMode("send")}
         aria-selected={mode === "send"}
       >
         <span class="material-symbols-outlined">upload</span>
@@ -94,7 +105,7 @@
         role="tab"
         type="button"
         class:active={mode === "receive"}
-        on:click={() => (mode = "receive")}
+        on:click={() => setMode("receive")}
         aria-selected={mode === "receive"}
       >
         <span class="material-symbols-outlined">download</span>
@@ -110,6 +121,10 @@
       If you configure TURN below, WebRTC can relay traffic over the internet when direct P2P fails.
     </p>
   </div>
+
+  <p class="mode-state" aria-live="polite">
+    Current mode: <strong>{mode === "send" ? "Send" : "Receive"}</strong>
+  </p>
 
   <section class="turn-settings">
     <header>
@@ -280,6 +295,18 @@
     font-size: 0.8rem;
     color: var(--md-sys-color-on-surface-variant);
     line-height: 1.5;
+  }
+
+  .mode-state {
+    margin: 0;
+    width: fit-content;
+    max-width: 100%;
+    font-size: 0.78rem;
+    color: var(--md-sys-color-on-secondary-container);
+    background: color-mix(in srgb, var(--md-sys-color-secondary-container) 74%, var(--md-sys-color-surface) 26%);
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-secondary) 35%, transparent);
+    border-radius: 999px;
+    padding: 0.22rem 0.6rem;
   }
 
   .p2p-content {
