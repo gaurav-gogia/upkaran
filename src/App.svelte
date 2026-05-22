@@ -132,7 +132,7 @@
 
   let currentTheme = "ocean";
   let colorMode = "light";
-  const perfPanelEnabled = import.meta.env.DEV;
+  const perfPanelEnabled = true;
 
   function applyAppearance() {
     if (typeof document === "undefined") return;
