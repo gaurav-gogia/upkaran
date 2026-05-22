@@ -4,7 +4,9 @@
     "private": true,
     "type": "module",
     "scripts": {
+        "predev": "node ./scripts/generate-public-assets.mjs",
         "dev": "vite",
+        "prebuild": "node ./scripts/generate-public-assets.mjs",
         "build": "vite build",
         "preview": "npm run build && wrangler dev",
         "build:wasm": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-wasm.ps1",
