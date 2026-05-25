@@ -2,6 +2,7 @@
   import { createEventDispatcher } from "svelte";
   import CropTool from "./CropTool.svelte";
   import { compressImage, cropImageByNormalizedRect, convertImage, getCompressionRecommendation } from "../js/image-tools.js";
+  import { imagesToDjvu } from "../js/djvu-tools.js";
 
   export let files = [];
   export let busy = false;
@@ -57,6 +58,14 @@
     dispatch("processing", true);
     dispatch("progress", 10);
     try {
+      if (task === "to-djvu") {
+        const blob = await imagesToDjvu(files, (value) => dispatch("progress", value));
+        const base = files.length === 1 ? files[0].name.replace(/\.[^.]+$/, "") : `images-${files.length}`;
+        dispatch("output", [{ name: `${base}.djvu`, blob }]);
+        dispatch("progress", 100);
+        return;
+      }
+
       const outputs = [];
       for (let i = 0; i < files.length; i += 1) {
         const file = files[i];
@@ -183,6 +192,7 @@
     <button on:click={() => run("convert")} disabled={busy || files.length < 1}>
       {compressDuringConvert ? "Convert + Compress" : "Convert"}
     </button>
+    <button on:click={() => run("to-djvu")} disabled={busy || files.length < 1}>Images to DjVu</button>
   </div>
 
   <CropTool {files} {busy} on:apply={applyCrop} />

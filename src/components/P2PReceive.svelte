@@ -4,6 +4,7 @@
   import { P2PSession, validateToken } from "../js/p2p.js";
   import { decodeQrFromImageFile } from "../js/qr-image.js";
   import { joinSignalCode, normalizeSignalCode, publishSignalAnswer } from "../js/signal-api.js";
+  import { saveMany } from "../js/download.js";
 
   const dispatch = createEventDispatcher();
 
@@ -39,6 +40,7 @@
   let joinBusy = false;
   let joinError = "";
   let activeSignalCode = "";
+  let selectedReceivedFingerprints = new Set();
 
   function getFileFingerprint(file) {
     return `${file.name}::${file.size}::${file.type || ""}::${file.lastModified || 0}`;
@@ -47,6 +49,59 @@
   function hasReceivedFile(file) {
     const fingerprint = getFileFingerprint(file);
     return receivedFiles.some((entry) => getFileFingerprint(entry.file) === fingerprint);
+  }
+
+  function isReceivedSelected(file) {
+    return selectedReceivedFingerprints.has(getFileFingerprint(file));
+  }
+
+  function toggleReceivedSelection(file, checked) {
+    const fingerprint = getFileFingerprint(file);
+    const next = new Set(selectedReceivedFingerprints);
+    if (checked) next.add(fingerprint);
+    else next.delete(fingerprint);
+    selectedReceivedFingerprints = next;
+  }
+
+  function toggleSelectAllReceived() {
+    if (selectedReceivedFingerprints.size === receivedFiles.length) {
+      selectedReceivedFingerprints = new Set();
+      return;
+    }
+
+    selectedReceivedFingerprints = new Set(receivedFiles.map((item) => getFileFingerprint(item.file)));
+  }
+
+  function downloadSelectedReceived() {
+    if (selectedReceivedFingerprints.size === 0) return;
+
+    const items = receivedFiles
+      .filter((item) => selectedReceivedFingerprints.has(getFileFingerprint(item.file)))
+      .map((item) => ({ blob: item.file, name: item.file.name }));
+
+    saveMany(items);
+  }
+
+  function downloadAllReceived() {
+    if (receivedFiles.length === 0) return;
+
+    const items = receivedFiles.map((item) => ({ blob: item.file, name: item.file.name }));
+    saveMany(items);
+  }
+
+  $: if (receivedFiles.length === 0 && selectedReceivedFingerprints.size > 0) {
+    selectedReceivedFingerprints = new Set();
+  }
+
+  $: {
+    const valid = new Set(receivedFiles.map((item) => getFileFingerprint(item.file)));
+    const next = new Set();
+    for (const fingerprint of selectedReceivedFingerprints) {
+      if (valid.has(fingerprint)) next.add(fingerprint);
+    }
+    if (next.size !== selectedReceivedFingerprints.size) {
+      selectedReceivedFingerprints = next;
+    }
   }
 
   // ── QR helpers ────────────────────────────────────────────────────────────
@@ -255,16 +310,37 @@
 
   // ── Deliver received files to parent ─────────────────────────────────────
 
-  function addToFileList() {
+  function collectUniqueFiles(items) {
     const uniqueFiles = [];
     const seen = new Set();
-    for (const item of receivedFiles) {
+    for (const item of items) {
       const fingerprint = getFileFingerprint(item.file);
       if (seen.has(fingerprint)) continue;
       seen.add(fingerprint);
       uniqueFiles.push(item.file);
     }
+    return uniqueFiles;
+  }
 
+  function addToFileList() {
+    const uniqueFiles = collectUniqueFiles(receivedFiles);
+    dispatch("filesreceived", uniqueFiles);
+    step = "done-added";
+  }
+
+  function addSelectedToFileList() {
+    if (selectedReceivedFingerprints.size < 1) return;
+    const selectedItems = receivedFiles.filter((item) => selectedReceivedFingerprints.has(getFileFingerprint(item.file)));
+    const uniqueFiles = collectUniqueFiles(selectedItems);
+    dispatch("filesreceived", uniqueFiles);
+    step = "done-added";
+  }
+
+  function addRemainingToFileList() {
+    if (selectedReceivedFingerprints.size < 1) return;
+    const remainingItems = receivedFiles.filter((item) => !selectedReceivedFingerprints.has(getFileFingerprint(item.file)));
+    if (remainingItems.length < 1) return;
+    const uniqueFiles = collectUniqueFiles(remainingItems);
     dispatch("filesreceived", uniqueFiles);
     step = "done-added";
   }
@@ -290,6 +366,7 @@
     joinBusy = false;
     joinError = "";
     activeSignalCode = "";
+    selectedReceivedFingerprints = new Set();
   }
 
   onDestroy(() => {
@@ -474,9 +551,22 @@
         <h4>Received files</h4>
         <span class="muted">{receivedFiles.length} file{receivedFiles.length === 1 ? "" : "s"}</span>
       </header>
+      <div class="selection-actions">
+        <button class="secondary" type="button" on:click={toggleSelectAllReceived}>
+          {selectedReceivedFingerprints.size === receivedFiles.length ? "Deselect All" : "Select All"}
+        </button>
+        <span class="muted">{selectedReceivedFingerprints.size} selected</span>
+      </div>
       <ul class="recv-list">
         {#each receivedFiles as item (item.file.name + item.file.size)}
           <li>
+            <label class="recv-checkbox-wrap" aria-label={`Select ${item.file.name}`}>
+              <input
+                type="checkbox"
+                checked={isReceivedSelected(item.file)}
+                on:change={(event) => toggleReceivedSelection(item.file, event.currentTarget.checked)}
+              />
+            </label>
             <span class="material-symbols-outlined recv-icon" class:ok={item.hashMatch} class:warn={!item.hashMatch}>
               {item.hashMatch ? "verified" : "warning"}
             </span>
@@ -488,6 +578,10 @@
 
       {#if step !== "done-added"}
         <div class="actions">
+          <button class="secondary" type="button" on:click={downloadSelectedReceived} disabled={selectedReceivedFingerprints.size === 0}>Download Selected</button>
+          <button class="secondary" type="button" on:click={downloadAllReceived}>Download All</button>
+          <button class="secondary" type="button" on:click={addSelectedToFileList} disabled={selectedReceivedFingerprints.size === 0}>Add Selected to File List</button>
+          <button class="secondary" type="button" on:click={addRemainingToFileList} disabled={selectedReceivedFingerprints.size === 0 || selectedReceivedFingerprints.size === receivedFiles.length}>Add Remaining to File List</button>
           <button type="button" on:click={addToFileList}>Add to File List</button>
         </div>
       {:else}
@@ -759,11 +853,24 @@
 
   .recv-list li {
     display: grid;
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: auto auto 1fr auto;
     align-items: center;
     gap: 0.5rem;
     padding: 0.3rem 0.2rem;
     border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  }
+
+  .selection-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .recv-checkbox-wrap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .recv-list li:last-child {

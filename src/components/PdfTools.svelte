@@ -1,5 +1,5 @@
 <script>
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onDestroy } from "svelte";
   import {
     mergePdfs,
     splitPdf,
@@ -11,12 +11,14 @@
     compressPdf,
     pdfToImages,
     renderPdfPreviewPage,
+    addPdfImageWatermark,
     getPdfPageCount,
     summarizeCustomSplitSelection,
     buildAllPagesSelection,
     unlockPdf,
     lockPdf
   } from "../js/pdf-tools.js";
+  import { pdfToDjvu } from "../js/djvu-tools.js";
   import { formatBytes } from "../js/detect.js";
 
   export let files = [];
@@ -49,6 +51,31 @@
   let pageThumbnails = {};
   let thumbnailRequestId = 0;
   let thumbnailFileKey = "";
+  let watermarkImageFile = null;
+  let watermarkImageUrl = "";
+  let watermarkImageAspect = 1;
+  let watermarkSelection = "";
+  let watermarkSelectionError = "";
+  let watermarkTargetPages = [];
+  let watermarkPlacementMap = {};
+  let watermarkStageEl = null;
+  let watermarkStageCanvasEl = null;
+  let watermarkPointerState = null;
+  let watermarkPointerId = null;
+  let watermarkOpacity = "35";
+  let watermarkRotation = "0";
+  let watermarkJumpPage = "";
+  let watermarkLockAspect = true;
+  let watermarkSyncToTargets = false;
+  let watermarkNudgeStep = "0.5";
+  let watermarkPlacementHistory = [];
+  let watermarkPlacementHistoryIndex = -1;
+  let livePreviewError = "";
+  let livePreviewRenderId = 0;
+  let livePreviewBaseSrc = "";
+  let livePreviewBaseImg = null;
+  let livePreviewWatermarkSrc = "";
+  let livePreviewWatermarkImg = null;
 
   const dispatch = createEventDispatcher();
 
@@ -149,6 +176,10 @@
       previewFileKey = nextKey;
       previewPage = 1;
       void loadPreview(next, previewPage);
+      watermarkSelection = "";
+      watermarkSelectionError = "";
+      watermarkPlacementMap = {};
+      initWatermarkPlacementHistory();
     }
     if (nextKey !== pageOrderFileKey) {
       pageOrderFileKey = nextKey;
@@ -173,6 +204,11 @@
     pageOrder = [];
     thumbnailFileKey = "";
     pageThumbnails = {};
+    watermarkSelection = "";
+    watermarkSelectionError = "";
+    watermarkTargetPages = [];
+    watermarkPlacementMap = {};
+    initWatermarkPlacementHistory();
   }
 
   $: if (files.length > 0 && previewFileKey) {
@@ -309,6 +345,588 @@
     pageOrder = [...pageOrder].sort((a, b) => b - a);
   }
 
+  function clamp(value, min, max) {
+    if (!Number.isFinite(value)) return min;
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function loadImageElement(src) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("Failed to load preview image."));
+      image.src = src;
+    });
+  }
+
+  async function getLivePreviewBaseImage() {
+    if (!previewUrl) return null;
+    if (livePreviewBaseImg && livePreviewBaseSrc === previewUrl) return livePreviewBaseImg;
+    const image = await loadImageElement(previewUrl);
+    livePreviewBaseSrc = previewUrl;
+    livePreviewBaseImg = image;
+    return image;
+  }
+
+  async function getLivePreviewWatermarkImage() {
+    if (!watermarkImageUrl) return null;
+    if (livePreviewWatermarkImg && livePreviewWatermarkSrc === watermarkImageUrl) return livePreviewWatermarkImg;
+    const image = await loadImageElement(watermarkImageUrl);
+    livePreviewWatermarkSrc = watermarkImageUrl;
+    livePreviewWatermarkImg = image;
+    return image;
+  }
+
+  async function paintLiveWatermarkPreview() {
+    if (!watermarkStageCanvasEl || !previewUrl) return;
+    const renderId = ++livePreviewRenderId;
+
+    try {
+      const baseImage = await getLivePreviewBaseImage();
+      if (!baseImage) return;
+      const watermarkImage = await getLivePreviewWatermarkImage();
+
+      if (renderId !== livePreviewRenderId) return;
+
+      const canvas = watermarkStageCanvasEl;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      const width = baseImage.naturalWidth || baseImage.width;
+      const height = baseImage.naturalHeight || baseImage.height;
+      if (width < 1 || height < 1) return;
+
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(baseImage, 0, 0, width, height);
+
+      if (watermarkImage) {
+        const placement = getCurrentWatermarkPlacement();
+        const drawWidth = placement.width * width;
+        const drawHeight = placement.height * height;
+        const drawX = placement.x * width;
+        const drawY = placement.y * height;
+        const centerX = drawX + drawWidth / 2;
+        const centerY = drawY + drawHeight / 2;
+
+        ctx.save();
+        ctx.globalAlpha = clamp(placement.opacity, 0, 1);
+        ctx.translate(centerX, centerY);
+        ctx.rotate(((placement.rotation || 0) * Math.PI) / 180);
+        ctx.drawImage(watermarkImage, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+        ctx.restore();
+      }
+
+      livePreviewError = "";
+    } catch (error) {
+      livePreviewError = error?.message || "Could not repaint live preview.";
+    }
+  }
+
+  function parseWatermarkSelection(selection, totalPages) {
+    if (!Number.isFinite(totalPages) || totalPages < 1) return [];
+    if (!selection || !selection.trim()) {
+      return Array.from({ length: totalPages }, (_, index) => index + 1);
+    }
+
+    const tokens = selection
+      .split(/[,;\n]+/)
+      .map((token) => token.trim())
+      .filter(Boolean);
+
+    if (tokens.length < 1) {
+      throw new Error("Enter page selections like 1-3,5.");
+    }
+
+    const pages = [];
+    for (const token of tokens) {
+      const match = token.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+      if (!match) {
+        throw new Error(`Invalid page selection \"${token}\".`);
+      }
+
+      let start = Number.parseInt(match[1], 10);
+      let end = match[2] ? Number.parseInt(match[2], 10) : start;
+      if (Number.isNaN(start) || Number.isNaN(end)) {
+        throw new Error(`Invalid page selection \"${token}\".`);
+      }
+      if (start > end) [start, end] = [end, start];
+      if (start < 1 || end > totalPages) {
+        throw new Error(`Selection \"${token}\" is out of range. This PDF has ${totalPages} pages.`);
+      }
+
+      for (let page = start; page <= end; page += 1) {
+        pages.push(page);
+      }
+    }
+
+    return [...new Set(pages)];
+  }
+
+  function buildDefaultWatermarkPlacement() {
+    const defaultWidth = 0.24;
+    const defaultHeight = clamp(defaultWidth / clamp(watermarkImageAspect, 0.1, 10), 0.06, 0.55);
+    return {
+      x: clamp(1 - defaultWidth - 0.04, 0, 1 - defaultWidth),
+      y: clamp(1 - defaultHeight - 0.04, 0, 1 - defaultHeight),
+      width: defaultWidth,
+      height: defaultHeight,
+      opacity: clamp(Number.parseFloat(watermarkOpacity) / 100, 0, 1),
+      rotation: Number.parseFloat(watermarkRotation) || 0
+    };
+  }
+
+  function clonePlacementMap(map) {
+    const clone = {};
+    for (const [pageKey, placement] of Object.entries(map || {})) {
+      clone[pageKey] = { ...placement };
+    }
+    return clone;
+  }
+
+  function placementMapSignature(map) {
+    const pages = Object.keys(map || {}).sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+    return pages.map((page) => {
+      const p = map[page];
+      return [
+        page,
+        Number(p.x).toFixed(5),
+        Number(p.y).toFixed(5),
+        Number(p.width).toFixed(5),
+        Number(p.height).toFixed(5),
+        Number(p.opacity).toFixed(5),
+        Number(p.rotation).toFixed(3)
+      ].join(":");
+    }).join("|");
+  }
+
+  function initWatermarkPlacementHistory() {
+    const snapshot = clonePlacementMap(watermarkPlacementMap);
+    watermarkPlacementHistory = [snapshot];
+    watermarkPlacementHistoryIndex = 0;
+  }
+
+  function pushWatermarkPlacementHistory(nextMap) {
+    const current = watermarkPlacementHistory[watermarkPlacementHistoryIndex] || {};
+    if (placementMapSignature(current) === placementMapSignature(nextMap)) return;
+
+    const prior = watermarkPlacementHistory.slice(0, watermarkPlacementHistoryIndex + 1);
+    prior.push(clonePlacementMap(nextMap));
+
+    const limit = 80;
+    const trimmed = prior.length > limit ? prior.slice(prior.length - limit) : prior;
+    watermarkPlacementHistory = trimmed;
+    watermarkPlacementHistoryIndex = trimmed.length - 1;
+  }
+
+  function undoWatermarkPlacementChange() {
+    if (watermarkPlacementHistoryIndex <= 0) return;
+    watermarkPlacementHistoryIndex -= 1;
+    watermarkPlacementMap = clonePlacementMap(watermarkPlacementHistory[watermarkPlacementHistoryIndex] || {});
+    ensureWatermarkPlacement(previewPage);
+  }
+
+  function redoWatermarkPlacementChange() {
+    if (watermarkPlacementHistoryIndex < 0 || watermarkPlacementHistoryIndex >= watermarkPlacementHistory.length - 1) return;
+    watermarkPlacementHistoryIndex += 1;
+    watermarkPlacementMap = clonePlacementMap(watermarkPlacementHistory[watermarkPlacementHistoryIndex] || {});
+    ensureWatermarkPlacement(previewPage);
+  }
+
+  function normalizeWatermarkPlacement(input) {
+    const width = clamp(Number.parseFloat(input?.width ?? 0.24), 0.02, 1);
+    const height = clamp(Number.parseFloat(input?.height ?? 0.12), 0.02, 1);
+    const x = clamp(Number.parseFloat(input?.x ?? 0.7), 0, 1 - width);
+    const y = clamp(Number.parseFloat(input?.y ?? 0.8), 0, 1 - height);
+    return {
+      x,
+      y,
+      width,
+      height,
+      opacity: clamp(Number.parseFloat(input?.opacity ?? watermarkOpacity / 100), 0, 1),
+      rotation: Number.parseFloat(input?.rotation ?? watermarkRotation) || 0
+    };
+  }
+
+  function ensureWatermarkPlacement(pageNum) {
+    if (!pageNum || !watermarkImageUrl) return;
+    if (watermarkPlacementMap[pageNum]) return;
+    watermarkPlacementMap = {
+      ...watermarkPlacementMap,
+      [pageNum]: buildDefaultWatermarkPlacement()
+    };
+  }
+
+  function getCurrentWatermarkPlacement() {
+    const pageNum = previewPage;
+    const existing = watermarkPlacementMap[pageNum];
+    if (existing) return existing;
+    return buildDefaultWatermarkPlacement();
+  }
+
+  function updateCurrentWatermarkPlacement(nextPlacement) {
+    if (!watermarkImageUrl || !previewPage) return;
+    const normalized = normalizeWatermarkPlacement(nextPlacement);
+    let nextMap = {
+      ...watermarkPlacementMap,
+      [previewPage]: normalized
+    };
+
+    // Optionally mirror the current adjustment to selected target pages in real time.
+    if (watermarkSyncToTargets && watermarkTargetPages.length > 0) {
+      nextMap = { ...nextMap };
+      for (const pageNum of watermarkTargetPages) {
+        nextMap[pageNum] = { ...normalized };
+      }
+    }
+
+    watermarkPlacementMap = nextMap;
+    pushWatermarkPlacementHistory(nextMap);
+  }
+
+  function setCurrentPlacementPercent(field, value) {
+    const parsed = Number.parseFloat(value);
+    if (!Number.isFinite(parsed)) return;
+    const current = getCurrentWatermarkPlacement();
+    const nextValue = parsed / 100;
+    const next = { ...current, [field]: nextValue };
+
+    if (watermarkLockAspect && (field === "width" || field === "height")) {
+      const aspect = clamp(watermarkImageAspect, 0.1, 10);
+      if (field === "width") {
+        next.height = nextValue / aspect;
+      } else {
+        next.width = nextValue * aspect;
+      }
+    }
+
+    updateCurrentWatermarkPlacement(next);
+  }
+
+  function setCurrentOpacity(value) {
+    watermarkOpacity = `${value}`;
+    const parsed = Number.parseFloat(value);
+    if (!Number.isFinite(parsed)) return;
+    const current = getCurrentWatermarkPlacement();
+    updateCurrentWatermarkPlacement({ ...current, opacity: parsed / 100 });
+  }
+
+  function setCurrentRotation(value) {
+    watermarkRotation = `${value}`;
+    const parsed = Number.parseFloat(value);
+    if (!Number.isFinite(parsed)) return;
+    const current = getCurrentWatermarkPlacement();
+    updateCurrentWatermarkPlacement({ ...current, rotation: parsed });
+  }
+
+  function onWatermarkImagePicked(event) {
+    const nextFile = event.currentTarget?.files?.[0];
+    if (!nextFile) return;
+
+    if (watermarkImageUrl) {
+      URL.revokeObjectURL(watermarkImageUrl);
+    }
+
+    watermarkImageFile = nextFile;
+    watermarkImageUrl = URL.createObjectURL(nextFile);
+    watermarkPlacementMap = {};
+    initWatermarkPlacementHistory();
+
+    const probe = new Image();
+    probe.onload = () => {
+      watermarkImageAspect = probe.naturalWidth > 0 && probe.naturalHeight > 0
+        ? probe.naturalWidth / probe.naturalHeight
+        : 1;
+      watermarkPlacementMap = {};
+      ensureWatermarkPlacement(previewPage || 1);
+      initWatermarkPlacementHistory();
+    };
+    probe.src = watermarkImageUrl;
+  }
+
+  function beginWatermarkPointer(event, mode) {
+    if (!watermarkStageEl || !watermarkImageUrl) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+
+    event.preventDefault();
+    const rect = watermarkStageEl.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return;
+    const startPlacement = getCurrentWatermarkPlacement();
+
+    watermarkPointerState = {
+      mode,
+      startX: event.clientX,
+      startY: event.clientY,
+      rectWidth: rect.width,
+      rectHeight: rect.height,
+      placement: startPlacement
+    };
+    watermarkPointerId = event.pointerId;
+
+    // Keep pointer events routed during drag even if cursor/finger leaves the overlay.
+    event.currentTarget?.setPointerCapture?.(event.pointerId);
+
+    window.addEventListener("pointermove", onWatermarkPointerMove);
+    window.addEventListener("pointerup", endWatermarkPointer);
+    window.addEventListener("pointercancel", endWatermarkPointer);
+  }
+
+  function onWatermarkStagePointerDown(event) {
+    if (!watermarkStageEl || !watermarkImageUrl || !previewUrl) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest(".watermark-overlay")) return;
+
+    const rect = watermarkStageEl.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return;
+
+    const current = getCurrentWatermarkPlacement();
+    const pointerXNorm = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const pointerYNorm = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+
+    const nextPlacement = {
+      ...current,
+      x: clamp(pointerXNorm - current.width / 2, 0, 1 - current.width),
+      y: clamp(pointerYNorm - current.height / 2, 0, 1 - current.height)
+    };
+    updateCurrentWatermarkPlacement(nextPlacement);
+  }
+
+  function nudgeWatermark(dx, dy) {
+    const stepNorm = clamp(Number.parseFloat(watermarkNudgeStep) / 100, 0.001, 0.1);
+    const current = getCurrentWatermarkPlacement();
+    updateCurrentWatermarkPlacement({
+      ...current,
+      x: clamp(current.x + (dx * stepNorm), 0, 1 - current.width),
+      y: clamp(current.y + (dy * stepNorm), 0, 1 - current.height)
+    });
+  }
+
+  function resetCurrentWatermarkPlacement() {
+    if (!watermarkImageUrl || !previewPage) return;
+    const nextMap = { ...watermarkPlacementMap };
+    delete nextMap[previewPage];
+    watermarkPlacementMap = nextMap;
+    ensureWatermarkPlacement(previewPage);
+    pushWatermarkPlacementHistory(watermarkPlacementMap);
+  }
+
+  function copyPlacementFromPreviousPage() {
+    if (!previewPage || previewPage <= 1) return;
+    const previous = watermarkPlacementMap[previewPage - 1];
+    if (!previous) return;
+    updateCurrentWatermarkPlacement(previous);
+  }
+
+  function clearTargetPlacements() {
+    if (watermarkTargetPages.length < 1) return;
+    const nextMap = { ...watermarkPlacementMap };
+    for (const pageNum of watermarkTargetPages) {
+      delete nextMap[pageNum];
+    }
+    watermarkPlacementMap = nextMap;
+    ensureWatermarkPlacement(previewPage);
+    pushWatermarkPlacementHistory(watermarkPlacementMap);
+  }
+
+  function onWatermarkPointerMove(event) {
+    if (!watermarkPointerState) return;
+    if (watermarkPointerId != null && event.pointerId != null && event.pointerId !== watermarkPointerId) return;
+
+    const state = watermarkPointerState;
+    const deltaXNorm = (event.clientX - state.startX) / state.rectWidth;
+    const deltaYNorm = (event.clientY - state.startY) / state.rectHeight;
+    const start = state.placement;
+
+    if (state.mode === "resize") {
+      let width = clamp(start.width + deltaXNorm, 0.02, 1 - start.x);
+      let height = clamp(start.height + deltaYNorm, 0.02, 1 - start.y);
+
+      if (watermarkLockAspect) {
+        const aspect = clamp(watermarkImageAspect, 0.1, 10);
+        height = width / aspect;
+        if (height > 1 - start.y) {
+          height = 1 - start.y;
+          width = height * aspect;
+        }
+        width = clamp(width, 0.02, 1 - start.x);
+        height = clamp(height, 0.02, 1 - start.y);
+      }
+
+      updateCurrentWatermarkPlacement({ ...start, width, height });
+      return;
+    }
+
+    const x = clamp(start.x + deltaXNorm, 0, 1 - start.width);
+    const y = clamp(start.y + deltaYNorm, 0, 1 - start.height);
+    updateCurrentWatermarkPlacement({ ...start, x, y });
+  }
+
+  function endWatermarkPointer() {
+    watermarkPointerState = null;
+    watermarkPointerId = null;
+    window.removeEventListener("pointermove", onWatermarkPointerMove);
+    window.removeEventListener("pointerup", endWatermarkPointer);
+    window.removeEventListener("pointercancel", endWatermarkPointer);
+  }
+
+  function copyCurrentPlacementToTargets() {
+    if (!watermarkImageUrl || watermarkTargetPages.length < 1) return;
+    const current = normalizeWatermarkPlacement(getCurrentWatermarkPlacement());
+    const nextMap = { ...watermarkPlacementMap };
+    for (const pageNum of watermarkTargetPages) {
+      nextMap[pageNum] = { ...current };
+    }
+    watermarkPlacementMap = nextMap;
+    pushWatermarkPlacementHistory(nextMap);
+  }
+
+  function jumpPreviewToPage(pageNum) {
+    if (!previewTotalPages) return;
+    const next = clamp(Number.parseInt(pageNum, 10), 1, previewTotalPages);
+    if (next === previewPage) return;
+    previewPage = next;
+  }
+
+  function jumpToTypedWatermarkPage() {
+    jumpPreviewToPage(watermarkJumpPage);
+  }
+
+  function applyWatermarkPreset(position) {
+    const current = getCurrentWatermarkPlacement();
+    const margin = 0.03;
+    let x = current.x;
+    let y = current.y;
+
+    if (position === "top-left") {
+      x = margin;
+      y = margin;
+    } else if (position === "top-right") {
+      x = 1 - current.width - margin;
+      y = margin;
+    } else if (position === "center") {
+      x = (1 - current.width) / 2;
+      y = (1 - current.height) / 2;
+    } else if (position === "bottom-left") {
+      x = margin;
+      y = 1 - current.height - margin;
+    } else if (position === "bottom-right") {
+      x = 1 - current.width - margin;
+      y = 1 - current.height - margin;
+    }
+
+    updateCurrentWatermarkPlacement({ ...current, x, y });
+  }
+
+  function nudgeWatermarkByKeys(event) {
+    const key = event.key;
+    if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(key)) return;
+    event.preventDefault();
+
+    const current = getCurrentWatermarkPlacement();
+    const baseStep = clamp(Number.parseFloat(watermarkNudgeStep) / 100, 0.001, 0.1);
+    const step = event.shiftKey ? baseStep * 4 : baseStep;
+    let x = current.x;
+    let y = current.y;
+
+    if (key === "ArrowLeft") x -= step;
+    if (key === "ArrowRight") x += step;
+    if (key === "ArrowUp") y -= step;
+    if (key === "ArrowDown") y += step;
+
+    updateCurrentWatermarkPlacement({
+      ...current,
+      x: clamp(x, 0, 1 - current.width),
+      y: clamp(y, 0, 1 - current.height)
+    });
+  }
+
+  function handleWatermarkKeyboardShortcuts(event) {
+    const isModifier = event.ctrlKey || event.metaKey;
+    const key = event.key;
+
+    if (isModifier && key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.shiftKey) {
+        redoWatermarkPlacementChange();
+      } else {
+        undoWatermarkPlacementChange();
+      }
+      return;
+    }
+
+    if (isModifier && key.toLowerCase() === "y") {
+      event.preventDefault();
+      redoWatermarkPlacementChange();
+      return;
+    }
+
+    if (!isModifier) {
+      if (key === "1") {
+        event.preventDefault();
+        applyWatermarkPreset("top-left");
+        return;
+      }
+      if (key === "2") {
+        event.preventDefault();
+        applyWatermarkPreset("top-right");
+        return;
+      }
+      if (key === "3") {
+        event.preventDefault();
+        applyWatermarkPreset("center");
+        return;
+      }
+      if (key === "4") {
+        event.preventDefault();
+        applyWatermarkPreset("bottom-left");
+        return;
+      }
+      if (key === "5") {
+        event.preventDefault();
+        applyWatermarkPreset("bottom-right");
+        return;
+      }
+    }
+
+    nudgeWatermarkByKeys(event);
+  }
+
+  $: {
+    try {
+      watermarkTargetPages = parseWatermarkSelection(watermarkSelection, previewTotalPages || splitPageCount);
+      watermarkSelectionError = "";
+    } catch (error) {
+      watermarkTargetPages = [];
+      watermarkSelectionError = error.message || "Invalid page selection.";
+    }
+  }
+
+  $: if (watermarkImageUrl && previewTotalPages > 0) {
+    ensureWatermarkPlacement(previewPage);
+  }
+
+  $: {
+    previewUrl;
+    watermarkImageUrl;
+    watermarkPlacementMap;
+    previewPage;
+    if (watermarkStageCanvasEl && previewUrl) {
+      void paintLiveWatermarkPreview();
+    }
+  }
+
+  onDestroy(() => {
+    if (watermarkImageUrl) {
+      URL.revokeObjectURL(watermarkImageUrl);
+    }
+    endWatermarkPointer();
+  });
+
   async function run(task) {
     if (!files.length || busy) return;
     dispatch("processing", true);
@@ -363,6 +981,30 @@
           name: `${files[0].name.replace(/\.pdf$/i, "")}-numbered.pdf`,
           blob
         }]);
+      } else if (task === "watermark-image") {
+        if (!watermarkImageFile) {
+          throw new Error("Pick a PNG or JPEG image before applying watermark.");
+        }
+        if (watermarkSelectionError) {
+          throw new Error(watermarkSelectionError);
+        }
+
+        const blob = await addPdfImageWatermark(
+          files[0],
+          watermarkImageFile,
+          {
+            selection: watermarkSelection,
+            placementByPage: watermarkPlacementMap,
+            defaultPlacement: buildDefaultWatermarkPlacement(),
+            defaultOpacity: clamp(Number.parseFloat(watermarkOpacity) / 100, 0, 1),
+            defaultRotation: Number.parseFloat(watermarkRotation) || 0
+          },
+          (v) => dispatch("progress", v)
+        );
+        dispatch("output", [{
+          name: `${files[0].name.replace(/\.pdf$/i, "")}-watermarked.pdf`,
+          blob
+        }]);
       } else if (task === "reorder-pages") {
         const blob = await reorderPdfPages(files[0], pageOrder, (v) => dispatch("progress", v));
         dispatch("output", [{
@@ -375,6 +1017,9 @@
       } else if (task === "to-images") {
         const outputs = await pdfToImages(files[0], imageFormat, (v) => dispatch("progress", v));
         dispatch("output", outputs);
+      } else if (task === "to-djvu") {
+        const blob = await pdfToDjvu(files[0], (v) => dispatch("progress", v));
+        dispatch("output", [{ name: `${files[0].name.replace(/\.pdf$/i, "")}.djvu`, blob }]);
       }
       dispatch("progress", 100);
     } catch (error) {
@@ -415,6 +1060,17 @@
     <option value="jpeg">JPEG</option>
     <option value="webp">WebP</option>
   </select>
+
+  <section class="page-actions quick-convert">
+    <header>
+      <h4>Quick convert</h4>
+      <span>Fast export shortcuts</span>
+    </header>
+    <div class="actions">
+      <button class="secondary" type="button" on:click={() => run("to-images")} disabled={busy || files.length < 1}>PDF to Images</button>
+      <button class="secondary" type="button" on:click={() => run("to-djvu")} disabled={busy || files.length < 1}>PDF to DjVu</button>
+    </div>
+  </section>
 
   <label for="pdf-split-mode">Split mode</label>
   <select id="pdf-split-mode" bind:value={splitMode}>
@@ -582,11 +1238,208 @@
     </div>
   </section>
 
+  <section class="page-actions watermark-section">
+    <header>
+      <h4>Image watermark</h4>
+      <span>Drag and set exact position per page</span>
+    </header>
+
+    <label for="pdf-watermark-image">Watermark image (PNG/JPEG)</label>
+    <input
+      id="pdf-watermark-image"
+      type="file"
+      accept="image/png,image/jpeg,.png,.jpg,.jpeg"
+      on:change={onWatermarkImagePicked}
+      disabled={busy || files.length < 1}
+    />
+
+    {#if watermarkImageUrl}
+      <label for="pdf-watermark-selection">Page selection (optional)</label>
+      <input
+        id="pdf-watermark-selection"
+        type="text"
+        bind:value={watermarkSelection}
+        placeholder="Empty = all pages"
+        disabled={busy}
+      />
+      {#if watermarkSelectionError}
+        <small class="split-error">{watermarkSelectionError}</small>
+      {:else}
+        <small>Target pages: {watermarkTargetPages.length || previewTotalPages} page(s)</small>
+      {/if}
+
+      {#if watermarkTargetPages.length > 0}
+        <div class="watermark-page-jump" aria-label="Jump to target page">
+          {#each watermarkTargetPages.slice(0, 24) as pageNum (pageNum)}
+            <button
+              class="secondary"
+              type="button"
+              class:is-active={pageNum === previewPage}
+              class:has-placement={!!watermarkPlacementMap[pageNum]}
+              on:click={() => jumpPreviewToPage(pageNum)}
+            >
+              {pageNum}
+            </button>
+          {/each}
+          {#if watermarkTargetPages.length > 24}
+            <span class="muted">+{watermarkTargetPages.length - 24} more</span>
+          {/if}
+          <div class="watermark-page-jump-input-wrap">
+            <input
+              type="number"
+              min="1"
+              max={previewTotalPages}
+              bind:value={watermarkJumpPage}
+              placeholder="Page"
+              on:keydown={(event) => event.key === "Enter" && jumpToTypedWatermarkPage()}
+            />
+            <button class="secondary" type="button" on:click={jumpToTypedWatermarkPage}>Go</button>
+          </div>
+          <small class="watermark-help">Tip: use page chips for quick hops, or type a page number for direct jump.</small>
+        </div>
+      {/if}
+
+      <div
+        class="watermark-stage"
+        bind:this={watermarkStageEl}
+        role="group"
+        aria-label="Watermark placement stage"
+        on:pointerdown={onWatermarkStagePointerDown}
+      >
+        {#if previewUrl}
+          <canvas class="watermark-stage-canvas" bind:this={watermarkStageCanvasEl} aria-label={`Live preview page ${previewPage}`}></canvas>
+          <div
+            class="watermark-overlay"
+            role="group"
+            aria-label="Watermark placement overlay"
+            style={`left:${getCurrentWatermarkPlacement().x * 100}%;top:${getCurrentWatermarkPlacement().y * 100}%;width:${getCurrentWatermarkPlacement().width * 100}%;height:${getCurrentWatermarkPlacement().height * 100}%;opacity:${getCurrentWatermarkPlacement().opacity};transform:rotate(${getCurrentWatermarkPlacement().rotation}deg);`}
+            on:pointerdown|stopPropagation={(event) => beginWatermarkPointer(event, "move")}
+            on:pointermove={onWatermarkPointerMove}
+            on:pointerup={endWatermarkPointer}
+            on:pointercancel={endWatermarkPointer}
+          >
+            <button
+              type="button"
+              class="watermark-resize"
+              aria-label="Resize watermark"
+              on:pointerdown|stopPropagation={(event) => beginWatermarkPointer(event, "resize")}
+              on:pointermove={onWatermarkPointerMove}
+              on:pointerup={endWatermarkPointer}
+              on:pointercancel={endWatermarkPointer}
+            >
+              open_with
+            </button>
+          </div>
+        {:else}
+          <p class="preview-message">Load a PDF page preview to place the watermark.</p>
+        {/if}
+      </div>
+      {#if livePreviewError}
+        <small class="split-error">{livePreviewError}</small>
+      {:else}
+        <small class="watermark-help">Live preview repaints immediately as you move, resize, rotate, or adjust opacity.</small>
+      {/if}
+      <small class="watermark-help">Position: X {Math.round(getCurrentWatermarkPlacement().x * 1000) / 10}% · Y {Math.round(getCurrentWatermarkPlacement().y * 1000) / 10}%</small>
+
+      <div class="watermark-utility-actions" role="group" aria-label="Watermark utility actions">
+        <button class="secondary" type="button" on:click={resetCurrentWatermarkPlacement}>Reset Current Page Placement</button>
+        <button class="secondary" type="button" on:click={copyPlacementFromPreviousPage} disabled={previewPage <= 1}>Copy From Previous Page</button>
+        <button class="secondary" type="button" on:click={clearTargetPlacements} disabled={watermarkTargetPages.length < 1}>Clear Target Placements</button>
+      </div>
+
+      <div class="watermark-history-actions" role="group" aria-label="Watermark placement history">
+        <button class="secondary" type="button" on:click={undoWatermarkPlacementChange} disabled={watermarkPlacementHistoryIndex <= 0}>Undo</button>
+        <button class="secondary" type="button" on:click={redoWatermarkPlacementChange} disabled={watermarkPlacementHistoryIndex < 0 || watermarkPlacementHistoryIndex >= watermarkPlacementHistory.length - 1}>Redo</button>
+      </div>
+
+      <div class="watermark-nudge-wrap" role="group" aria-label="Nudge watermark position">
+        <div class="watermark-nudge-pad" role="group" aria-label="Directional nudge pad">
+          <button class="secondary nudge-up" type="button" on:click={() => nudgeWatermark(0, -1)} aria-label="Nudge up">Up</button>
+          <button class="secondary nudge-left" type="button" on:click={() => nudgeWatermark(-1, 0)} aria-label="Nudge left">Left</button>
+          <button class="secondary nudge-right" type="button" on:click={() => nudgeWatermark(1, 0)} aria-label="Nudge right">Right</button>
+          <button class="secondary nudge-down" type="button" on:click={() => nudgeWatermark(0, 1)} aria-label="Nudge down">Down</button>
+        </div>
+        <div class="watermark-nudge-step">
+          <label for="wm-nudge-step">Step (%)</label>
+          <select id="wm-nudge-step" bind:value={watermarkNudgeStep}>
+            <option value="0.25">0.25</option>
+            <option value="0.5">0.5</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="watermark-grid">
+        <div>
+          <label for="wm-x">X (%)</label>
+          <input id="wm-x" type="number" min="0" max="100" step="0.1" value={Math.round(getCurrentWatermarkPlacement().x * 1000) / 10} on:input={(event) => setCurrentPlacementPercent("x", event.currentTarget.value)} />
+        </div>
+        <div>
+          <label for="wm-y">Y (%)</label>
+          <input id="wm-y" type="number" min="0" max="100" step="0.1" value={Math.round(getCurrentWatermarkPlacement().y * 1000) / 10} on:input={(event) => setCurrentPlacementPercent("y", event.currentTarget.value)} />
+        </div>
+        <div>
+          <label for="wm-width">Width (%)</label>
+          <input id="wm-width" type="number" min="2" max="100" step="0.1" value={Math.round(getCurrentWatermarkPlacement().width * 1000) / 10} on:input={(event) => setCurrentPlacementPercent("width", event.currentTarget.value)} />
+        </div>
+        <div>
+          <label for="wm-height">Height (%)</label>
+          <input id="wm-height" type="number" min="2" max="100" step="0.1" value={Math.round(getCurrentWatermarkPlacement().height * 1000) / 10} on:input={(event) => setCurrentPlacementPercent("height", event.currentTarget.value)} />
+        </div>
+        <div>
+          <label for="wm-opacity">Opacity (%)</label>
+          <input id="wm-opacity" type="number" min="0" max="100" step="1" value={Math.round(getCurrentWatermarkPlacement().opacity * 100)} on:input={(event) => setCurrentOpacity(event.currentTarget.value)} />
+          <input type="range" min="0" max="100" step="1" value={Math.round(getCurrentWatermarkPlacement().opacity * 100)} on:input={(event) => setCurrentOpacity(event.currentTarget.value)} />
+        </div>
+        <div>
+          <label for="wm-rotation">Rotation (deg)</label>
+          <input id="wm-rotation" type="number" min="-360" max="360" step="1" value={getCurrentWatermarkPlacement().rotation} on:input={(event) => setCurrentRotation(event.currentTarget.value)} />
+        </div>
+      </div>
+
+      <div class="watermark-presets" role="group" aria-label="Watermark snap positions">
+        <button class="secondary" type="button" on:click={() => applyWatermarkPreset("top-left")}>Top Left</button>
+        <button class="secondary" type="button" on:click={() => applyWatermarkPreset("top-right")}>Top Right</button>
+        <button class="secondary" type="button" on:click={() => applyWatermarkPreset("center")}>Center</button>
+        <button class="secondary" type="button" on:click={() => applyWatermarkPreset("bottom-left")}>Bottom Left</button>
+        <button class="secondary" type="button" on:click={() => applyWatermarkPreset("bottom-right")}>Bottom Right</button>
+      </div>
+
+      <label class="watermark-lock-toggle">
+        <input type="checkbox" bind:checked={watermarkLockAspect} />
+        <span>Lock aspect ratio while resizing</span>
+      </label>
+      <small class="watermark-help">When enabled, resize keeps original image proportions in drag and numeric size edits.</small>
+
+      <label class="watermark-lock-toggle">
+        <input type="checkbox" bind:checked={watermarkSyncToTargets} />
+        <span>Sync live edits to selected target pages</span>
+      </label>
+      <small class="watermark-help">When enabled, move/resize/opacity/rotation updates on current page are mirrored to all selected target pages.</small>
+
+      <button
+        class="secondary watermark-nudge-control"
+        type="button"
+        on:keydown={handleWatermarkKeyboardShortcuts}
+        title="Arrows nudge, Shift+Arrow larger step, Ctrl/Cmd+Z undo, Ctrl/Cmd+Y or Ctrl/Cmd+Shift+Z redo, 1-5 preset snap"
+      >
+        Keyboard Shortcuts: focus here, then use Arrows, Ctrl/Cmd+Z, Ctrl/Cmd+Y, or keys 1-5
+      </button>
+
+      <div class="actions">
+        <button class="secondary" type="button" on:click={copyCurrentPlacementToTargets} disabled={busy || watermarkTargetPages.length < 1}>Copy Current Placement to Target Pages</button>
+        <button class="secondary" type="button" on:click={() => run("watermark-image")} disabled={busy || files.length < 1 || !watermarkImageFile || !!watermarkSelectionError}>Apply Image Watermark</button>
+      </div>
+    {/if}
+  </section>
+
   <div class="actions">
     <button on:click={() => run("split")} disabled={busy || files.length < 1}>Split PDF</button>
     <button on:click={() => run("merge")} disabled={busy || files.length < 2}>Merge PDFs</button>
     <button on:click={() => run("compress")} disabled={busy || files.length < 1}>Compress PDF</button>
     <button on:click={() => run("to-images")} disabled={busy || files.length < 1}>PDF to Images</button>
+    <button on:click={() => run("to-djvu")} disabled={busy || files.length < 1}>PDF to DjVu</button>
   </div>
 
   <!-- PDF Unlock section -->
@@ -918,6 +1771,196 @@
     min-width: 0;
   }
 
+  .watermark-stage {
+    position: relative;
+    width: 100%;
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #fff;
+    touch-action: manipulation;
+    cursor: crosshair;
+  }
+
+  .watermark-stage-canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    user-select: none;
+    pointer-events: none;
+  }
+
+  .watermark-overlay {
+    position: absolute;
+    border: 2px solid var(--md-sys-color-primary);
+    background: color-mix(in srgb, var(--md-sys-color-primary) 6%, transparent);
+    cursor: move;
+    touch-action: none;
+    transform-origin: center center;
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
+    min-width: 12px;
+    min-height: 12px;
+    box-sizing: border-box;
+  }
+
+  .watermark-resize {
+    position: absolute;
+    right: -10px;
+    bottom: -10px;
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    border-radius: 999px;
+    padding: 0;
+    font-size: 16px;
+    line-height: 1;
+    font-family: "Material Symbols Outlined", "Segoe UI Symbol", sans-serif;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: nwse-resize;
+  }
+
+  .watermark-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.55rem;
+    margin-bottom: 0.65rem;
+  }
+
+  .watermark-grid > div {
+    min-width: 0;
+  }
+
+  .watermark-page-jump {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.65rem;
+    align-items: center;
+  }
+
+  .watermark-page-jump button {
+    min-width: 2.2rem;
+    padding: 0.25rem 0.45rem;
+    font-size: 0.78rem;
+  }
+
+  .watermark-page-jump button.is-active {
+    background: var(--md-sys-color-secondary-container);
+    color: var(--md-sys-color-on-secondary-container);
+    border-color: var(--md-sys-color-secondary);
+  }
+
+  .watermark-page-jump button.has-placement {
+    box-shadow: inset 0 0 0 1px var(--md-sys-color-primary);
+  }
+
+  .watermark-page-jump-input-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .watermark-page-jump-input-wrap input {
+    width: 5.4rem;
+    margin: 0;
+  }
+
+  .watermark-help {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 0.75rem;
+  }
+
+  .watermark-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-bottom: 0.65rem;
+  }
+
+  .watermark-nudge-control {
+    margin-bottom: 0.65rem;
+  }
+
+  .watermark-nudge-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-bottom: 0.65rem;
+    align-items: end;
+  }
+
+  .watermark-nudge-pad {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(2.4rem, auto));
+    grid-template-rows: repeat(3, minmax(2.1rem, auto));
+    gap: 0.25rem;
+    align-items: stretch;
+  }
+
+  .watermark-nudge-pad .nudge-up {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .watermark-nudge-pad .nudge-left {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .watermark-nudge-pad .nudge-right {
+    grid-column: 3;
+    grid-row: 2;
+  }
+
+  .watermark-nudge-pad .nudge-down {
+    grid-column: 2;
+    grid-row: 3;
+  }
+
+  .watermark-history-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-bottom: 0.65rem;
+  }
+
+  .watermark-nudge-step {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 6rem;
+  }
+
+  .watermark-nudge-step label {
+    margin: 0;
+    font-size: 0.75rem;
+  }
+
+  .watermark-nudge-step select {
+    margin: 0;
+  }
+
+  .watermark-utility-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-bottom: 0.65rem;
+  }
+
+  .watermark-lock-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-bottom: 0.65rem;
+    font-size: 0.82rem;
+  }
+
   .merge-wrap header {
     display: flex;
     justify-content: space-between;
@@ -1018,7 +2061,8 @@
     }
 
     .number-grid,
-    .lock-grid {
+    .lock-grid,
+    .watermark-grid {
       grid-template-columns: 1fr;
     }
   }

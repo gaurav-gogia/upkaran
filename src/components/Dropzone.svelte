@@ -45,7 +45,7 @@
   }}
 >
   <h2>Drop files here</h2>
-  <p>PDF, images, or any file batch. All processing stays in this browser.</p>
+  <p>PDF, DjVu, images, or any file batch. All processing stays in this browser.</p>
   <button on:click={openPicker}>Choose files</button>
   <input id="file-picker" type="file" {accept} multiple on:change={onInputChange} />
 </div>

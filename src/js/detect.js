@@ -1,4 +1,11 @@
 const PDF_TYPES = new Set(["application/pdf"]);
+const DJVU_TYPES = new Set([
+  "image/vnd.djvu",
+  "image/djvu",
+  "image/x.djvu",
+  "application/vnd.djvu",
+  "application/x-djvu"
+]);
 const IMAGE_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -65,6 +72,7 @@ const CODE_TYPES = new Set([
 ]);
 
 const IMAGE_EXT_REGEX = /\.(png|jpe?g|webp|avif|gif|heic|heif|tiff?|bmp|ico|jxl|jp2|jpx|apng|svg)$/i;
+const DJVU_EXT_REGEX = /\.djvu$/i;
 
 // Extensions for office/document files
 const DOCUMENT_EXT_REGEX = /\.(docx|pptx|xlsx|doc|ppt|xls|txt|rtf|odt|odp|ods)$/i;
@@ -78,6 +86,7 @@ const CODE_EXT_REGEX =
 
 function detectFromName(name = "") {
   const lower = name.toLowerCase();
+  if (DJVU_EXT_REGEX.test(lower)) return "djvu";
   if (lower.endsWith(".pdf")) return "pdf";
   if (IMAGE_EXT_REGEX.test(lower)) return "image";
   if (DOCUMENT_EXT_REGEX.test(lower)) return "document";
@@ -90,6 +99,7 @@ function detectFromName(name = "") {
 }
 
 export function detectFileKind(file) {
+  if (DJVU_TYPES.has(file.type)) return "djvu";
   if (PDF_TYPES.has(file.type)) return "pdf";
   if (IMAGE_TYPES.has(file.type)) return "image";
   if (DOCUMENT_TYPES.has(file.type)) return "document";
@@ -101,6 +111,7 @@ export function detectFileKind(file) {
 /** Human-readable label for a file kind. */
 export function kindLabel(kind) {
   switch (kind) {
+    case "djvu": return "DjVu";
     case "pdf": return "PDF";
     case "image": return "Image";
     case "document": return "Document";
@@ -126,13 +137,14 @@ export function classifyFiles(items) {
   return items.reduce(
     (acc, item) => {
       const kind = item.kind || detectFileKind(item.file || item);
-      if (kind === "pdf") acc.pdfCount += 1;
+      if (kind === "djvu") acc.djvuCount += 1;
+      else if (kind === "pdf") acc.pdfCount += 1;
       else if (kind === "image") acc.imageCount += 1;
       else if (kind === "document" || kind === "data" || kind === "code") acc.contentCount += 1;
       else acc.otherCount += 1;
       return acc;
     },
-    { pdfCount: 0, imageCount: 0, contentCount: 0, otherCount: 0 }
+    { djvuCount: 0, pdfCount: 0, imageCount: 0, contentCount: 0, otherCount: 0 }
   );
 }
 

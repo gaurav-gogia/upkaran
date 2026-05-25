@@ -3,11 +3,13 @@
 
   export let route = "empty";
   export let processing = false;
+  export let selectedCount = 0;
 
   const dispatch = createEventDispatcher();
 
   const labels = {
     empty: "Awaiting files",
+    djvu: "DjVu tools",
     pdf: "PDF tools",
     image: "Image tools",
     file: "File tools",
@@ -26,6 +28,10 @@
       clearingSecurely = false;
     }
   }
+
+  function handleDownloadSelected() {
+    dispatch("downloadselected");
+  }
 </script>
 
 <nav class="panel toolbar">
@@ -40,6 +46,9 @@
     <p>{labels[route] ?? "Ready"}</p>
   </div>
   <div class="toolbar-actions">
+    <button class="secondary" disabled={processing || selectedCount === 0} on:click={handleDownloadSelected}>
+      Download Selected{selectedCount > 0 ? ` (${selectedCount})` : ""}
+    </button>
     <button class="secondary" disabled={processing} on:click={() => dispatch("clear")}>Clear</button>
     <button
       class="secondary danger"

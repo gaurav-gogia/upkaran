@@ -2,6 +2,7 @@ import { classifyFiles } from "../js/detect.js";
 
 export const ROUTES = {
   EMPTY: "empty",
+  DJVU: "djvu",
   PDF: "pdf",
   IMAGE: "image",
   FILE: "file",
@@ -15,6 +16,10 @@ export function resolveRoute(files) {
   }
 
   const summary = classifyFiles(files);
+  if (summary.djvuCount === files.length) {
+    return ROUTES.DJVU;
+  }
+
   if (summary.pdfCount === files.length) {
     return ROUTES.PDF;
   }

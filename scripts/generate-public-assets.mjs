@@ -86,7 +86,7 @@ const manifestJson = `{
 }
 `;
 
-const serviceWorkerJs = `const CACHE_NAME = "upkaran-shell-v1";
+const serviceWorkerJs = `const CACHE_NAME = "upkaran-shell-v2";
 const BASE_PATH = (() => {
   try {
     const pathname = new URL(self.registration.scope).pathname || "/";

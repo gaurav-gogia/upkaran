@@ -11,6 +11,7 @@
   import CompareWorkspace from "./components/CompareWorkspace.svelte";
   import { resolveRouteFromSelection, resolveRoute, ROUTES } from "./routes/router.js";
   import { enrichFiles } from "./js/detect.js";
+  import { saveMany } from "./js/download.js";
   import { addResults, clearResults } from "./js/results-store.js";
   import { decideDropRouting } from "./js/drop-routing.js";
   import {
@@ -218,6 +219,7 @@
         "Add page numbers",
         "Compress PDF",
         "PDF to images",
+        "PDF to DjVu",
         "Unlock / remove PDF restrictions",
         "Lock PDF with password"
       ]
@@ -229,9 +231,20 @@
       items: [
         "Compress selected images",
         "Convert format (PNG/JPEG/WebP/AVIF)",
+        "Images to DjVu",
         "Interactive crop with resize handles",
         "Batch crop using normalized selection",
         "Supports common formats including HEIC"
+      ]
+    },
+    {
+      title: "DjVu",
+      pickerAccept: ".djvu,image/vnd.djvu,application/vnd.djvu,application/x-djvu",
+      cta: "Try DjVu tools",
+      items: [
+        "DjVu to PDF",
+        "DjVu to images",
+        "Fully in-browser conversion"
       ]
     },
     {
@@ -291,10 +304,18 @@
   $: modalSelectedFiles = baseActiveFiles.filter((file) => modalSelectedIds.includes(file.id));
   $: effectiveFiles = modalSelectedFiles.length > 0 ? modalSelectedFiles : baseActiveFiles;
   $: route = resolveRoute(effectiveFiles);
+  $: effectiveDjvuFiles = effectiveFiles.filter((entry) => entry.kind === "djvu");
   $: effectivePdfFiles = effectiveFiles.filter((entry) => entry.kind === "pdf");
   $: effectiveImageFiles = effectiveFiles.filter((entry) => entry.kind === "image");
   $: effectiveContentFiles = effectiveFiles.filter((entry) => entry.kind === "document" || entry.kind === "data" || entry.kind === "code");
-  $: batchEligibleFiles = route === ROUTES.PDF ? effectivePdfFiles : route === ROUTES.IMAGE ? effectiveImageFiles : [];
+  $: batchEligibleFiles =
+    route === ROUTES.PDF
+      ? effectivePdfFiles
+      : route === ROUTES.IMAGE
+        ? effectiveImageFiles
+        : route === ROUTES.DJVU
+          ? effectiveDjvuFiles
+          : [];
   $: compareWorkspaceFiles = route === ROUTES.CONTENT && effectiveContentFiles.length === 2 ? effectiveContentFiles : [];
 
   $: if (baseRoute === ROUTES.MIXED && modalSelectedFiles.length === 0) {
@@ -375,8 +396,17 @@
     if (newFiles.length === 0) return;
 
     const uniqueFiles = dedupeIncomingP2PFiles(newFiles);
+    const skippedCount = newFiles.length - uniqueFiles.length;
     if (uniqueFiles.length === 0) {
-      showToast({ message: "No new files were added (duplicates skipped)", type: "error" });
+      const skippedNames = [...new Set(newFiles.map((file) => file?.name).filter(Boolean))]
+        .slice(0, 3)
+        .join(", ");
+      showToast({
+        message: skippedNames
+          ? `No new files were added (${newFiles.length} duplicate${newFiles.length === 1 ? "" : "s"} skipped): ${skippedNames}`
+          : "No new files were added (duplicates skipped)",
+        type: "error"
+      });
       return;
     }
 
@@ -399,6 +429,31 @@
     });
 
     notifyFilesAdded(uniqueFiles.length);
+    if (skippedCount > 0) {
+      showToast({
+        message: `${skippedCount} duplicate file${skippedCount === 1 ? "" : "s"} skipped while adding from P2P`,
+        type: "success"
+      });
+    }
+  }
+
+  function onDownloadSelectedFiles() {
+    if (selectedFiles.length === 0) return;
+
+    const items = selectedFiles
+      .filter((entry) => entry?.file instanceof Blob && entry?.name)
+      .map((entry) => ({ blob: entry.file, name: entry.name }));
+
+    if (items.length === 0) {
+      showToast({ message: "Selected items are not downloadable", type: "error" });
+      return;
+    }
+
+    saveMany(items);
+    showToast({
+      message: `Downloading ${items.length} selected file${items.length === 1 ? "" : "s"}`,
+      type: "success"
+    });
   }
 
   function onP2PModeChange(event) {
@@ -706,7 +761,14 @@
     <PerfSummaryPanel enabled={perfPanelEnabled} />
   {/if}
 
-  <Toolbar route={route} processing={processing} on:clear={clearAll} on:secureclear={secureClearData} />
+  <Toolbar
+    route={route}
+    processing={processing}
+    selectedCount={selectedFiles.length}
+    on:clear={clearAll}
+    on:secureclear={secureClearData}
+    on:downloadselected={onDownloadSelectedFiles}
+  />
 
   <InstallCta canInstall={canInstallPwa} installed={pwaInstalled} busy={pwaInstallBusy} on:install={onInstallApp} />
 
@@ -856,6 +918,20 @@
       {/await}
     {/if}
 
+      {#if route === ROUTES.DJVU}
+        {#await import("./components/DjvuTools.svelte") then mod}
+          <svelte:component
+            this={mod.default}
+            files={effectiveDjvuFiles}
+            busy={processing}
+            on:processing={(event) => (processing = event.detail)}
+            on:progress={onProgress}
+            on:error={onError}
+            on:output={onOutput}
+          />
+        {/await}
+      {/if}
+
     {#if route === ROUTES.IMAGE}
       {#await import("./components/ImageTools.svelte") then mod}
         <svelte:component
@@ -960,14 +1036,14 @@
   >
     <h2 id="fallback-help-title">Need a feature not available here?</h2>
     <p>
-      If you cannot complete a task in this app, continue with trusted alternatives.
+      If you cannot complete a task in this app, continue to alternatives.
     </p>
     <div class="fallback-actions">
       <a class="fallback-link" href="https://ilovepdf.com" target="_blank" rel="noopener noreferrer">
-        Open iLovePDF
+        Open iLovePDF (SaaS tool)
       </a>
       <a class="fallback-link secondary-link" href="https://ihatepdf.cv" target="_blank" rel="noopener noreferrer">
-        Open iHatePDF
+        Open iHatePDF (Offline tool)
       </a>
     </div>
   </section>

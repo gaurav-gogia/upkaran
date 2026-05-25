@@ -313,6 +313,104 @@ export async function addPdfPageNumbers(entry, options = {}, onProgress = () => 
   return new Blob([await doc.save()], { type: "application/pdf" });
 }
 
+function clampNumber(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+function parseImageRotation(value) {
+  const parsed = Number.parseFloat(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function resolvePlacementForPage(placementByPage, pageNum) {
+  if (!placementByPage || typeof placementByPage !== "object") return null;
+  const direct = placementByPage[pageNum];
+  if (direct) return direct;
+  const stringKey = placementByPage[String(pageNum)];
+  if (stringKey) return stringKey;
+  return null;
+}
+
+function resolveImageExt(file) {
+  const type = `${file?.type || ""}`.toLowerCase();
+  if (type.includes("png")) return "png";
+  if (type.includes("jpeg") || type.includes("jpg")) return "jpg";
+
+  const name = `${file?.name || ""}`.toLowerCase();
+  if (name.endsWith(".png")) return "png";
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "jpg";
+  return "";
+}
+
+export async function addPdfImageWatermark(entry, imageFile, options = {}, onProgress = () => {}) {
+  if (!(imageFile instanceof Blob)) {
+    throw new Error("Pick a PNG or JPEG image to place on the PDF.");
+  }
+
+  const pdfBytes = await entry.file.arrayBuffer();
+  const doc = await PDFDocument.load(pdfBytes);
+  const pageCount = doc.getPageCount();
+
+  const ranges = parseSelectionOrAll(options.selection ?? "", pageCount);
+  const indices = expandRangesToIndices(ranges, pageCount, { dedupe: true });
+  if (indices.length < 1) {
+    throw new Error("No pages selected for watermark placement.");
+  }
+
+  const imageBytes = await imageFile.arrayBuffer();
+  const imageExt = resolveImageExt(imageFile);
+  if (!imageExt) {
+    throw new Error("Only PNG and JPEG watermark images are supported.");
+  }
+
+  const embeddedImage = imageExt === "png"
+    ? await doc.embedPng(imageBytes)
+    : await doc.embedJpg(imageBytes);
+
+  const defaultPlacement = options.defaultPlacement || {};
+  const defaultOpacity = clampNumber(Number.parseFloat(options.defaultOpacity ?? 1), 0, 1);
+  const defaultRotation = parseImageRotation(options.defaultRotation ?? 0);
+  const placementByPage = options.placementByPage || {};
+
+  for (let i = 0; i < indices.length; i += 1) {
+    const pageIndex = indices[i];
+    const pageNum = pageIndex + 1;
+    const page = doc.getPage(pageIndex);
+    const pageWidth = page.getWidth();
+    const pageHeight = page.getHeight();
+
+    const pagePlacement = resolvePlacementForPage(placementByPage, pageNum) || defaultPlacement;
+
+    const widthNorm = clampNumber(Number.parseFloat(pagePlacement.width ?? 0.22), 0.02, 1);
+    const heightNorm = clampNumber(Number.parseFloat(pagePlacement.height ?? 0.12), 0.02, 1);
+    const leftNorm = clampNumber(Number.parseFloat(pagePlacement.x ?? 0.74), 0, 1 - widthNorm);
+    const topNorm = clampNumber(Number.parseFloat(pagePlacement.y ?? 0.84), 0, 1 - heightNorm);
+
+    const drawWidth = widthNorm * pageWidth;
+    const drawHeight = heightNorm * pageHeight;
+    const drawX = leftNorm * pageWidth;
+    const drawYTop = topNorm * pageHeight;
+    const drawY = pageHeight - drawYTop - drawHeight;
+
+    const opacity = clampNumber(Number.parseFloat(pagePlacement.opacity ?? defaultOpacity), 0, 1);
+    const rotation = parseImageRotation(pagePlacement.rotation ?? defaultRotation);
+
+    page.drawImage(embeddedImage, {
+      x: drawX,
+      y: drawY,
+      width: drawWidth,
+      height: drawHeight,
+      opacity,
+      rotate: degrees(rotation)
+    });
+
+    onProgress(Math.round(((i + 1) / indices.length) * 100));
+  }
+
+  return new Blob([await doc.save()], { type: "application/pdf" });
+}
+
 export async function compressPdf(entry, _quality = 0.75, onProgress = () => {}) {
   onProgress(30);
   const bytes = await entry.file.arrayBuffer();

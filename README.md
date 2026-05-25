@@ -85,6 +85,15 @@ npm run build
 npm run preview
 ```
 
+### Deploy to Production (Cloudflare Workers)
+
+```bash
+npm run deploy
+```
+
+This uploads `dist/client` as static assets (including `manifest.json` and
+`service-worker.js`) and deploys the Worker runtime.
+
 ### Rebuild WebAssembly Modules
 
 ```powershell

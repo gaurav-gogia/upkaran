@@ -40,13 +40,24 @@
 
   function buildAvailableOperations(kind) {
     if (kind === "image") {
-      return [{ id: BATCH_OPERATION_IDS.IMAGE_COMPRESS, label: "Compress images" }];
+      return [
+        { id: BATCH_OPERATION_IDS.IMAGE_COMPRESS, label: "Compress images" },
+        { id: BATCH_OPERATION_IDS.IMAGE_TO_DJVU, label: "Images to DjVu" },
+      ];
     }
 
     if (kind === "pdf") {
       return [
         { id: BATCH_OPERATION_IDS.PDF_COMPRESS, label: "Compress PDFs" },
         { id: BATCH_OPERATION_IDS.PDF_TO_IMAGES, label: "PDF to images" },
+        { id: BATCH_OPERATION_IDS.PDF_TO_DJVU, label: "PDF to DjVu" },
+      ];
+    }
+
+    if (kind === "djvu") {
+      return [
+        { id: BATCH_OPERATION_IDS.DJVU_TO_PDF, label: "DjVu to PDF" },
+        { id: BATCH_OPERATION_IDS.DJVU_TO_IMAGES, label: "DjVu to images" },
       ];
     }
 
@@ -77,7 +88,7 @@
       : fileCount < 2
         ? "Select at least two files to run a meaningful batch queue."
         : !batchKind
-          ? "Batch currently supports one type at a time: all PDF or all image files."
+          ? "Batch currently supports one type at a time: all DjVu, all PDF, or all image files."
           : "";
 
   function resetRows() {
@@ -195,7 +206,7 @@
   {/if}
 
   {#if availableOperations.length < 1}
-    <small>Select files of one supported type (PDF or image) to run a batch operation.</small>
+    <small>Select files of one supported type (DjVu, PDF, or image) to run a batch operation.</small>
   {:else}
     <label for="batch-operation">Operation</label>
     <select id="batch-operation" bind:value={selectedOperation} disabled={busy || running}>
@@ -222,7 +233,7 @@
       </select>
     {/if}
 
-    {#if selectedOperation === BATCH_OPERATION_IDS.PDF_TO_IMAGES}
+    {#if selectedOperation === BATCH_OPERATION_IDS.PDF_TO_IMAGES || selectedOperation === BATCH_OPERATION_IDS.DJVU_TO_IMAGES}
       <label for="batch-pdf-image-format">Image format</label>
       <select id="batch-pdf-image-format" bind:value={pdfImageFormat} disabled={busy || running}>
         {#each PDF_IMAGE_FORMAT_OPTIONS as option}

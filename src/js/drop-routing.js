@@ -1,6 +1,7 @@
 import { ROUTES, resolveRoute } from "../routes/router.js";
 
 function kindToRoute(kind) {
+  if (kind === "djvu") return ROUTES.DJVU;
   if (kind === "pdf") return ROUTES.PDF;
   if (kind === "image") return ROUTES.IMAGE;
   if (kind === "document" || kind === "data" || kind === "code") return ROUTES.CONTENT;
@@ -19,6 +20,7 @@ export function decideDropRouting(entries = []) {
   }
 
   const buckets = new Map([
+    [ROUTES.DJVU, []],
     [ROUTES.PDF, []],
     [ROUTES.IMAGE, []],
     [ROUTES.CONTENT, []],
@@ -30,7 +32,7 @@ export function decideDropRouting(entries = []) {
     buckets.get(route)?.push(entry);
   }
 
-  const routePriority = [ROUTES.PDF, ROUTES.IMAGE, ROUTES.CONTENT, ROUTES.FILE];
+  const routePriority = [ROUTES.DJVU, ROUTES.PDF, ROUTES.IMAGE, ROUTES.CONTENT, ROUTES.FILE];
   let winnerRoute = ROUTES.FILE;
   let winnerSize = -1;
 
