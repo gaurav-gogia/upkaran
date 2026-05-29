@@ -60,7 +60,7 @@
     <header class="drawer-header">
       <div class="title-row">
         <span class="material-symbols-outlined header-icon">download_done</span>
-        <h3>Results</h3>
+        <h3>Results Command Center</h3>
         <span class="badge" class:badge--new={pulsing}>{$results.length}</span>
       </div>
       <div class="header-actions">
@@ -71,6 +71,12 @@
         <button class="secondary" on:click={clearResults}>Clear</button>
       </div>
     </header>
+
+    <div class="drawer-meta" aria-label="Results summary">
+      <span class="meta-chip">Artifacts <strong>{$results.length}</strong></span>
+      <span class="meta-chip">Approx total <strong>{formatBytes($results.reduce((sum, item) => sum + (item.size || 0), 0))}</strong></span>
+      <span class="meta-chip">Last batch <strong>{newBatch > 0 ? `#${newBatch}` : "-"}</strong></span>
+    </div>
 
     <div class="cards">
       {#each $results as entry, i (entry.id)}
@@ -116,7 +122,7 @@
 
 <style>
   .drawer {
-    padding: 1rem;
+    padding: 1.1rem;
     transition: box-shadow 0.4s ease, outline-color 0.4s ease;
     outline: 2px solid transparent;
     outline-offset: 2px;
@@ -141,6 +147,30 @@
     margin-bottom: 0.9rem;
   }
 
+  .drawer-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .meta-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 999px;
+    padding: 0.25rem 0.56rem;
+    font-size: 0.74rem;
+    color: var(--md-sys-color-on-surface-variant);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 84%, var(--md-sys-color-primary) 16%);
+  }
+
+  .meta-chip strong {
+    color: var(--md-sys-color-on-surface);
+    font-weight: 700;
+  }
+
   .title-row {
     display: flex;
     align-items: center;
@@ -154,7 +184,8 @@
 
   h3 {
     margin: 0;
-    font-size: 1rem;
+    font-size: 1.02rem;
+    letter-spacing: 0.01em;
   }
 
   .badge {
@@ -175,7 +206,7 @@
 
   .badge--new {
     animation: badge-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-    background: #1e8a4a;
+    background: var(--app-state-success, #1e8a4a);
   }
 
   @keyframes badge-pop {
@@ -213,7 +244,7 @@
   }
 
   .card:hover {
-    box-shadow: 0 4px 14px rgba(0,0,0,0.11);
+    box-shadow: var(--elevation-2, 0 4px 14px rgba(0,0,0,0.11));
     transform: translateY(-2px);
   }
 

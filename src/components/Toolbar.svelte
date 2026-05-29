@@ -34,8 +34,10 @@
   }
 </script>
 
-<nav class="panel toolbar">
-  <div class="status-row">
+<nav class="panel toolbar-shell" aria-label="Workflow controls">
+  <div class="status-cluster">
+    <p class="status-label">Workflow status</p>
+    <div class="status-row">
     {#if processing}
       <span class="spinner" aria-hidden="true">
         <span></span><span></span><span></span>
@@ -43,45 +45,66 @@
     {:else}
       <span class="status-dot" aria-hidden="true"></span>
     {/if}
-    <p>{labels[route] ?? "Ready"}</p>
+      <p>{labels[route] ?? "Ready"}</p>
+    </div>
+    <small>Selected: {selectedCount}</small>
   </div>
-  <div class="toolbar-actions">
+
+  <div class="toolbar-actions" role="group" aria-label="File actions">
     <button class="secondary" disabled={processing || selectedCount === 0} on:click={handleDownloadSelected}>
-      Download Selected{selectedCount > 0 ? ` (${selectedCount})` : ""}
+      Export selected{selectedCount > 0 ? ` (${selectedCount})` : ""}
     </button>
-    <button class="secondary" disabled={processing} on:click={() => dispatch("clear")}>Clear</button>
+    <button class="secondary" disabled={processing} on:click={() => dispatch("clear")}>Reset workspace</button>
     <button
-      class="secondary danger"
+      class="danger"
       disabled={processing || clearingSecurely}
       on:click={handleSecureClear}
       title="Securely clear Upkaran local browser data (memory, storage, cache, and service workers)"
     >
-      {clearingSecurely ? "Clearing..." : "Wipe/Shred Local Data"}
+      {clearingSecurely ? "Purging..." : "Purge local traces"}
     </button>
   </div>
 </nav>
 
 <style>
-  .toolbar {
-    padding: 0.8rem 1rem;
-    margin-bottom: 1rem;
+  .toolbar-shell {
+    padding: 0.95rem 1rem;
+    margin-bottom: 0.8rem;
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-end;
+    gap: 0.9rem;
+  }
+
+  .status-cluster {
+    display: grid;
+    gap: 0.28rem;
+    min-width: 0;
+  }
+
+  .status-label {
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface-variant);
   }
 
   .status-row {
     display: flex;
     align-items: center;
-    gap: 0.55rem;
+    gap: 0.48rem;
+    min-width: 0;
   }
 
   .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #1e8a4a;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    background: var(--app-state-success, #1e8a4a);
     flex-shrink: 0;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-state-success, #1e8a4a) 25%, transparent);
   }
 
   .spinner {
@@ -95,7 +118,7 @@
     display: block;
     width: 6px;
     height: 6px;
-    border-radius: 50%;
+    border-radius: 2px;
     background: var(--md-sys-color-primary);
     animation: spin-bounce 1s ease-in-out infinite;
   }
@@ -112,19 +135,48 @@
     display: flex;
     gap: 0.5rem;
     align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   p {
     margin: 0;
     font-weight: 600;
+    font-size: 0.88rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  small {
+    margin: 0;
+    color: var(--md-sys-color-on-surface-variant);
+    font-size: 0.74rem;
   }
 
   .danger {
+    background: color-mix(in srgb, var(--md-sys-color-error, #b3261e) 16%, var(--md-sys-color-surface));
     color: var(--md-sys-color-error, #b3261e);
-    border-color: var(--md-sys-color-error, #b3261e);
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-error, #b3261e) 45%, var(--md-sys-color-outline-variant));
   }
 
   .danger:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--md-sys-color-error, #b3261e) 10%, transparent);
+    filter: brightness(1.03);
+  }
+
+  @media (max-width: 760px) {
+    .toolbar-shell {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .toolbar-actions {
+      width: 100%;
+    }
+
+    .toolbar-actions button {
+      flex: 1;
+      min-width: 0;
+    }
   }
 </style>

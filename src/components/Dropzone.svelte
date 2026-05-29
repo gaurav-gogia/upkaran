@@ -44,6 +44,7 @@
     }
   }}
 >
+  <p class="eyebrow">Intake</p>
   <h2>Drop files here</h2>
   <p>PDF, DjVu, images, or any file batch. All processing stays in this browser.</p>
   <button on:click={openPicker}>Choose files</button>
@@ -52,9 +53,13 @@
 
 <style>
   .dropzone {
-    padding: 2rem;
+    padding: 2.7rem 1.5rem;
+    min-height: 260px;
+    display: grid;
+    place-content: center;
+    gap: 0.55rem;
     border: 2px dashed var(--md-sys-color-outline);
-    border-radius: var(--radius-lg);
+    border-radius: 2px;
     text-align: center;
     transition: all 0.2s ease;
   }
@@ -64,13 +69,32 @@
     background: var(--md-sys-color-primary-container);
   }
 
+  .eyebrow {
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
   h2 {
-    margin: 0 0 0.4rem;
+    margin: 0;
+    font-size: clamp(1.55rem, 2.8vw, 2.25rem);
+    letter-spacing: 0.02em;
   }
 
   p {
-    margin: 0 0 1rem;
+    margin: 0 0 0.9rem;
     color: var(--md-sys-color-on-surface-variant);
+    font-size: 0.95rem;
+  }
+
+  @media (max-width: 760px) {
+    .dropzone {
+      min-height: 220px;
+      padding: 2.2rem 1rem;
+    }
   }
 
   input {

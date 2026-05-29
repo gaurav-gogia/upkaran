@@ -71,6 +71,27 @@ const CODE_TYPES = new Set([
   "text/x-swift"
 ]);
 
+const ARCHIVE_TYPES = new Set([
+  "application/zip",
+  "application/x-zip-compressed",
+  "application/gzip",
+  "application/x-gzip",
+  "application/x-tar",
+  "application/x-7z-compressed",
+  "application/vnd.rar",
+  "application/x-rar-compressed"
+]);
+
+const VIDEO_TYPES = new Set([
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "video/x-matroska",
+  "video/x-msvideo",
+  "video/mpeg",
+  "video/ogg"
+]);
+
 const IMAGE_EXT_REGEX = /\.(png|jpe?g|webp|avif|gif|heic|heif|tiff?|bmp|ico|jxl|jp2|jpx|apng|svg)$/i;
 const DJVU_EXT_REGEX = /\.djvu$/i;
 
@@ -84,11 +105,36 @@ const DATA_EXT_REGEX = /\.(csv|tsv|json|yaml|yml|xml|geojson|ndjson|jsonl)$/i;
 const CODE_EXT_REGEX =
   /\.(md|mdx|html?|css|scss|sass|less|js|mjs|cjs|jsx|ts|tsx|mts|cts|py|java|go|rs|php|rb|swift|kt|sh|bash|zsh|fish|c|cc|cpp|cxx|h|hh|hpp|sql|r|lua|pl|ex|exs|erl|hrl|clj|cljs|elm|hs|ml|fsharp?|dart|scala|groovy|m|vim|el|lisp|zig|v|toml|ini|env|conf|cfg|properties|nix|tf|hcl|Dockerfile|makefile|cmake|gradle)$/i;
 
+const ARCHIVE_EXT_REGEX = /\.(zip|tar|gz|tgz|bz2|xz|7z|rar)$/i;
+const VIDEO_EXT_REGEX = /\.(mp4|webm|mov|mkv|avi|mpeg|mpg|m4v|ogv)$/i;
+
+export const TYPE_TABS = {
+  PDF: "pdf",
+  IMAGE: "image",
+  ARCHIVE: "archive",
+  TEXT: "text",
+  CODE: "code",
+  VIDEO: "video",
+  OTHER: "other"
+};
+
+const TYPE_TAB_ORDER = [
+  TYPE_TABS.PDF,
+  TYPE_TABS.IMAGE,
+  TYPE_TABS.ARCHIVE,
+  TYPE_TABS.TEXT,
+  TYPE_TABS.CODE,
+  TYPE_TABS.VIDEO,
+  TYPE_TABS.OTHER
+];
+
 function detectFromName(name = "") {
   const lower = name.toLowerCase();
   if (DJVU_EXT_REGEX.test(lower)) return "djvu";
   if (lower.endsWith(".pdf")) return "pdf";
   if (IMAGE_EXT_REGEX.test(lower)) return "image";
+  if (ARCHIVE_EXT_REGEX.test(lower)) return "archive";
+  if (VIDEO_EXT_REGEX.test(lower)) return "video";
   if (DOCUMENT_EXT_REGEX.test(lower)) return "document";
   if (DATA_EXT_REGEX.test(lower)) return "data";
   if (CODE_EXT_REGEX.test(lower)) return "code";
@@ -102,10 +148,65 @@ export function detectFileKind(file) {
   if (DJVU_TYPES.has(file.type)) return "djvu";
   if (PDF_TYPES.has(file.type)) return "pdf";
   if (IMAGE_TYPES.has(file.type)) return "image";
+  if (ARCHIVE_TYPES.has(file.type)) return "archive";
+  if (VIDEO_TYPES.has(file.type)) return "video";
   if (DOCUMENT_TYPES.has(file.type)) return "document";
   if (DATA_TYPES.has(file.type)) return "data";
   if (CODE_TYPES.has(file.type)) return "code";
   return detectFromName(file.name);
+}
+
+export function mapKindToTypeTab(kind) {
+  switch (kind) {
+    case "djvu":
+    case "pdf":
+      return TYPE_TABS.PDF;
+    case "image":
+      return TYPE_TABS.IMAGE;
+    case "archive":
+      return TYPE_TABS.ARCHIVE;
+    case "document":
+    case "data":
+      return TYPE_TABS.TEXT;
+    case "code":
+      return TYPE_TABS.CODE;
+    case "video":
+      return TYPE_TABS.VIDEO;
+    default:
+      return TYPE_TABS.OTHER;
+  }
+}
+
+export function typeTabLabel(tab) {
+  switch (tab) {
+    case TYPE_TABS.PDF:
+      return "PDF";
+    case TYPE_TABS.IMAGE:
+      return "Image";
+    case TYPE_TABS.ARCHIVE:
+      return "Archive";
+    case TYPE_TABS.TEXT:
+      return "Text";
+    case TYPE_TABS.CODE:
+      return "Code";
+    case TYPE_TABS.VIDEO:
+      return "Video";
+    default:
+      return "Other";
+  }
+}
+
+export function summarizeTypeTabs(items) {
+  const counts = new Map();
+  for (const item of items || []) {
+    const kind = item.kind || detectFileKind(item.file || item);
+    const tab = mapKindToTypeTab(kind);
+    counts.set(tab, (counts.get(tab) || 0) + 1);
+  }
+
+  return TYPE_TAB_ORDER
+    .filter((tab) => counts.has(tab))
+    .map((tab) => ({ tab, count: counts.get(tab) || 0 }));
 }
 
 /** Human-readable label for a file kind. */
@@ -114,6 +215,8 @@ export function kindLabel(kind) {
     case "djvu": return "DjVu";
     case "pdf": return "PDF";
     case "image": return "Image";
+    case "archive": return "Archive";
+    case "video": return "Video";
     case "document": return "Document";
     case "data": return "Data file";
     case "code": return "Source code";

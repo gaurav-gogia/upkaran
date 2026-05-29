@@ -89,10 +89,17 @@
     drag_indicator
   </button>
 
-  <div class="file-icon" aria-hidden="true">
+  <button
+    class="file-icon"
+    type="button"
+    aria-label={`Inspect ${item.name}`}
+    title="Inspect file"
+    disabled={busy}
+    on:click|stopPropagation={() => dispatch("forensics", item)}
+  >
     <span class="material-symbols-outlined">{iconForKind(item)}</span>
     <small>{extLabel(item.name)}</small>
-  </div>
+  </button>
 
   <div class="meta">
     <strong>{item.name}</strong>
@@ -102,18 +109,6 @@
   <div class="trailing">
     <slot name="trailing"></slot>
   </div>
-
-  <button
-    class="inspect-btn"
-    type="button"
-    aria-label={`Inspect ${item.name}`}
-    title="File forensics"
-    disabled={busy}
-    on:click|stopPropagation={() => dispatch("forensics", item)}
-  >
-    <span class="material-symbols-outlined">search</span>
-    <span class="inspect-label">Inspect</span>
-  </button>
 
   <button
     class="icon-button remove-btn"
@@ -129,16 +124,21 @@
 <style>
   .file-item {
     display: grid;
-    grid-template-columns: auto auto auto minmax(0, 1fr) auto auto auto;
-    grid-template-areas: "check drag icon meta trailing inspect remove";
+    grid-template-columns: auto auto auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "check drag icon meta trailing remove";
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.7rem 0.8rem;
+    gap: 0.62rem;
+    padding: 0.62rem 0.68rem;
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 12px;
-    background: var(--md-sys-color-surface-container-low);
+    border-radius: var(--app-radius-sm, 12px);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 90%, var(--md-sys-color-primary) 10%);
     outline: none;
     min-width: 0;
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+
+  .file-item:hover {
+    border-color: color-mix(in srgb, var(--md-sys-color-primary) 58%, var(--md-sys-color-outline-variant));
   }
 
   .file-item:focus-visible {
@@ -148,7 +148,8 @@
 
   .file-item.selected {
     border-color: var(--md-sys-color-primary);
-    background: var(--md-sys-color-primary-container);
+    background: color-mix(in srgb, var(--md-sys-color-primary-container) 72%, var(--md-sys-color-surface) 28%);
+    box-shadow: inset 2px 0 0 var(--md-sys-color-primary);
   }
 
   .check-wrap {
@@ -176,48 +177,8 @@
     align-items: center;
   }
 
-  .inspect-btn {
-    grid-area: inspect;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    padding: 0.3rem 0.7rem;
-    border-radius: 999px;
-    border: 1.5px solid var(--md-sys-color-primary);
-    background: transparent;
-    color: var(--md-sys-color-primary);
-    font-size: 0.78rem;
-    font-weight: 600;
-    font-family: inherit;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background 0.15s, color 0.15s;
-    line-height: 1;
-  }
-
-  .inspect-btn .material-symbols-outlined {
-    font-size: 1rem;
-    font-family: "Material Symbols Outlined", sans-serif;
-    line-height: 1;
-  }
-
-  .inspect-btn:hover:not(:disabled) {
-    background: var(--md-sys-color-primary);
-    color: var(--md-sys-color-on-primary);
-  }
-
-  .inspect-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
   .remove-btn {
     grid-area: remove;
-  }
-
-  @media (max-width: 520px) {
-    .inspect-label { display: none; }
-    .inspect-btn { padding: 0.3rem; }
   }
 
   .check-wrap {
@@ -239,7 +200,7 @@
   .checkbox-mark {
     width: 18px;
     height: 18px;
-    border-radius: 2px;
+    border-radius: 0;
     border: 2px solid var(--md-sys-color-outline);
     background: var(--md-sys-color-surface);
     transition: all 0.16s ease;
@@ -266,7 +227,7 @@
     width: 34px;
     height: 34px;
     min-width: 34px;
-    border-radius: 999px;
+    border-radius: var(--app-radius-sm, 12px);
     padding: 0;
     display: inline-flex;
     align-items: center;
@@ -274,7 +235,7 @@
     font-family: "Material Symbols Outlined", "Segoe UI Symbol", sans-serif;
     background: transparent;
     color: var(--md-sys-color-on-surface-variant);
-    border: none;
+    border: 1px solid var(--md-sys-color-outline-variant);
     overflow: hidden;
     white-space: nowrap;
     text-overflow: clip;
@@ -282,14 +243,39 @@
     line-height: 1;
   }
 
+  .drag-handle {
+    opacity: 0.45;
+  }
+
+  .file-item:hover .drag-handle,
+  .file-item:focus-within .drag-handle {
+    opacity: 0.95;
+  }
+
   .file-icon {
     display: grid;
     justify-items: center;
     align-content: center;
-    width: 52px;
-    min-width: 52px;
+    width: 54px;
+    min-width: 54px;
     gap: 0.05rem;
     color: var(--md-sys-color-primary);
+    border-radius: var(--app-radius-sm, 12px);
+    padding: 0.28rem 0.2rem;
+    background: color-mix(in srgb, var(--md-sys-color-primary) 6%, transparent);
+    border: 1px solid var(--md-sys-color-outline-variant);
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+
+  .file-icon:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--md-sys-color-primary) 58%, var(--md-sys-color-outline-variant));
+    background: color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent);
+  }
+
+  .file-icon:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .file-icon span {
@@ -317,7 +303,7 @@
 
   strong {
     font-weight: 500;
-    font-size: 0.92rem;
+    font-size: 0.9rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

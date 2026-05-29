@@ -1,4 +1,4 @@
-import { classifyFiles } from "../js/detect.js";
+import { classifyFiles, summarizeTypeTabs, typeTabLabel, TYPE_TABS } from "../js/detect.js";
 
 export const ROUTES = {
   EMPTY: "empty",
@@ -45,4 +45,44 @@ export function resolveRouteFromSelection(allFiles, selectedFiles) {
     activeFiles,
     route: resolveRoute(activeFiles)
   };
+}
+
+export function resolveTypeTabs(allFiles) {
+  return summarizeTypeTabs(allFiles || []);
+}
+
+export function routeToTypeTab(route) {
+  switch (route) {
+    case ROUTES.PDF:
+    case ROUTES.DJVU:
+      return TYPE_TABS.PDF;
+    case ROUTES.IMAGE:
+      return TYPE_TABS.IMAGE;
+    case ROUTES.CONTENT:
+      return TYPE_TABS.TEXT;
+    case ROUTES.FILE:
+      return TYPE_TABS.ARCHIVE;
+    default:
+      return "";
+  }
+}
+
+export function routeWorkspaceTitle(route, tab) {
+  if (tab) return `${typeTabLabel(tab)} Tools`;
+  switch (route) {
+    case ROUTES.PDF:
+      return "PDF Tools";
+    case ROUTES.DJVU:
+      return "DjVu Tools";
+    case ROUTES.IMAGE:
+      return "Image Tools";
+    case ROUTES.FILE:
+      return "File Tools";
+    case ROUTES.CONTENT:
+      return "Content Tools";
+    case ROUTES.MIXED:
+      return "Choose a File Type";
+    default:
+      return "Upkaran Workspace";
+  }
 }

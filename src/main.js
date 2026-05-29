@@ -1,4 +1,5 @@
 import "./styles/material.css";
+import "./styles/overhaul.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
 

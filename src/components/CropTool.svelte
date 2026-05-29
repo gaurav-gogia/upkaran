@@ -461,7 +461,7 @@
     aria-expanded={!collapsed}
     on:click={() => (collapsed = !collapsed)}
   >
-    <h4>Crop</h4>
+    <h4>Precision Crop Workspace</h4>
     <span class="file-count">{files.length} selected image(s)</span>
     <span class="chevron" class:rotated={collapsed} aria-hidden="true">&#8964;</span>
   </button>
@@ -472,6 +472,12 @@
   {:else if !ready}
     <p class="hint">Select image files to enable crop.</p>
   {:else}
+    <div class="crop-meta" aria-label="Crop workspace summary">
+      <span class="meta-chip">Zoom <strong>{zoom.toFixed(1)}x</strong></span>
+      <span class="meta-chip">Aspect <strong>{aspectPreset === "free" ? "Free" : aspectPreset}</strong></span>
+      <span class="meta-chip">Crop area <strong>{Math.round(rect.width)} x {Math.round(rect.height)} px</strong></span>
+    </div>
+
     <div class="controls">
       <label for="crop-zoom">Zoom</label>
       <input id="crop-zoom" type="range" min="0.5" max="3" step="0.1" bind:value={zoom} disabled={busy} />
@@ -519,7 +525,7 @@
       </div>
     </div>
 
-    <button type="button" on:click={applyCrop} disabled={busy || files.length < 1}>Apply Crop to {files.length} Image(s)</button>
+    <button class="apply-btn" type="button" on:click={applyCrop} disabled={busy || files.length < 1}>Apply Crop to {files.length} Image(s)</button>
   {/if}
   {/if}
 </section>
@@ -528,6 +534,8 @@
   .crop-tool {
     margin-top: 0.9rem;
     padding: 1rem;
+    border-radius: var(--app-radius-md, 18px);
+    box-shadow: var(--elevation-1);
   }
 
   .crop-header {
@@ -535,19 +543,44 @@
     align-items: baseline;
     gap: 0.5rem;
     width: 100%;
-    background: none;
-    border: none;
-    padding: 0;
+    background: color-mix(in srgb, var(--md-sys-color-primary) 7%, var(--md-sys-color-surface));
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 18%, var(--md-sys-color-outline-variant));
+    border-radius: var(--app-radius-sm, 12px);
+    padding: 0.6rem 0.7rem;
     margin: 0 0 0.8rem;
     cursor: pointer;
     text-align: left;
     flex-wrap: wrap;
-    box-shadow: none;
+    box-shadow: var(--elevation-1);
   }
 
   .crop-header:hover {
-    background: none;
-    box-shadow: none;
+    background: color-mix(in srgb, var(--md-sys-color-primary) 12%, var(--md-sys-color-surface));
+    box-shadow: var(--elevation-2, var(--elevation-1));
+  }
+
+  .crop-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-bottom: 0.7rem;
+  }
+
+  .meta-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 999px;
+    padding: 0.25rem 0.56rem;
+    font-size: 0.74rem;
+    color: var(--md-sys-color-on-surface-variant);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 86%, var(--md-sys-color-primary) 14%);
+  }
+
+  .meta-chip strong {
+    color: var(--md-sys-color-on-surface);
+    font-weight: 700;
   }
 
   .file-count {
@@ -592,10 +625,10 @@
 
   .controls select {
     width: 100%;
-    border-radius: 10px;
+    border-radius: var(--app-radius-sm, 12px);
     border: 1px solid var(--md-sys-color-outline);
     padding: 0.42rem 0.55rem;
-    background: #fff;
+    background: var(--md-sys-color-surface);
   }
 
   .controls span {
@@ -626,7 +659,7 @@
 
   .stage-wrap {
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 12px;
+    border-radius: var(--app-radius-sm, 12px);
     overflow: auto;
     max-height: 420px;
     background: var(--md-sys-color-surface);
@@ -651,10 +684,15 @@
 
   .preview-wrap canvas {
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 10px;
+    border-radius: var(--app-radius-sm, 12px);
     max-width: 100%;
     width: 100%;
     background: var(--md-sys-color-surface);
+  }
+
+  .apply-btn {
+    width: 100%;
+    font-weight: 600;
   }
 
   .error-text {

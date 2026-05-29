@@ -21,6 +21,8 @@
   $: modeLabel =
     mode === "text"
       ? "Text diff"
+      : mode === "text-fallback"
+        ? "Normalized diff"
       : mode === "pdf"
         ? "PDF side-by-side"
         : mode === "image"
@@ -30,7 +32,7 @@
     !pairReady
       ? "Select exactly two files to open compare mode."
       : mode === "unsupported"
-        ? "Choose two files of the same family: text-text, PDF-PDF, or image-image."
+        ? "Choose two files to compare."
         : "";
 
   $: if (!pairReady) {
@@ -46,9 +48,9 @@
   async function runCompare() {
     if (!pairReady) return;
 
-    if (mode !== "text" && mode !== "pdf" && mode !== "image") {
+    if (mode !== "text" && mode !== "text-fallback" && mode !== "pdf" && mode !== "image") {
       compareResult = null;
-      compareError = "Compare supports text-text, PDF-PDF, or image-image pairs.";
+      compareError = "Compare is unavailable for this pair.";
       loading = false;
       return;
     }
@@ -68,8 +70,8 @@
     try {
       const { result, durationMs } = await measureAsync("compare.text", () =>
         compareTextEntries(files[0], files[1], {
-          maxBytes: 2 * 1024 * 1024,
-          maxLines: 1200,
+          maxBytes: 4 * 1024 * 1024,
+          maxLines: 1800,
         }), {
           leftKind: files[0]?.kind || "unknown",
           rightKind: files[1]?.kind || "unknown",
@@ -89,7 +91,7 @@
 <section class="panel compare-workspace">
   <header>
     <h3>Compare Workspace</h3>
-    <p>Baseline compare for two selected files. Supports text diff, PDF side-by-side, and image overlay.</p>
+    <p>Compare for two selected files with visual modes for PDF/images and normalized fallback for all other supported file types.</p>
     {#if pairReady}
       <small class="mode-badge">Mode: {modeLabel}</small>
     {/if}

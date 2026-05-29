@@ -9,8 +9,16 @@
   import PerfSummaryPanel from "./components/PerfSummaryPanel.svelte";
   import BatchOperations from "./components/BatchOperations.svelte";
   import CompareWorkspace from "./components/CompareWorkspace.svelte";
-  import { resolveRouteFromSelection, resolveRoute, ROUTES } from "./routes/router.js";
-  import { enrichFiles } from "./js/detect.js";
+  import PdfTools from "./components/PdfTools.svelte";
+  import DjvuTools from "./components/DjvuTools.svelte";
+  import ImageTools from "./components/ImageTools.svelte";
+  import FileTools from "./components/FileTools.svelte";
+  import ContentTools from "./components/ContentTools.svelte";
+  import ForensicsDrawer from "./components/ForensicsDrawer.svelte";
+  import ResultsDrawer from "./components/ResultsDrawer.svelte";
+  import TextDiffWorkspace from "./components/TextDiffWorkspace.svelte";
+  import { resolveRouteFromSelection, resolveRoute, resolveTypeTabs, routeToTypeTab, routeWorkspaceTitle, ROUTES } from "./routes/router.js";
+  import { enrichFiles, kindLabel, mapKindToTypeTab, typeTabLabel } from "./js/detect.js";
   import { saveMany } from "./js/download.js";
   import { addResults, clearResults } from "./js/results-store.js";
   import { decideDropRouting } from "./js/drop-routing.js";
@@ -36,10 +44,19 @@
   let effectiveFiles = [];
   let baseRoute = ROUTES.EMPTY;
   let route = ROUTES.EMPTY;
+  let availableTypeTabs = [];
+  let activeTypeTab = "";
+  let typeScopedEntries = [];
+  let scopedSelectedFiles = [];
+  let workspaceTitle = "Upkaran Workspace";
+  let shortcutHelpOpen = false;
 
   /** Which editor workspace is currently open (null | 'latex' | 'mermaid' | 'plantuml') */
   let activeEditor = null;
   let forensicsEntry = null;
+  let forensicsModalOpen = false;
+  let intakeCollapsed = false;
+  let intakeModalOpen = false;
 
   let processing = false;
   let progress = 0;
@@ -104,11 +121,13 @@
 
   let dropzoneRef;
   let pickerAccept = "";
-  let featureOverviewCollapsed = false;
+  let featureOverviewCollapsed = true;
   let topViewTab = "appearance";
+  let workspaceControlsOpen = false;
   let p2pOpen = false;
   let p2pMode = "send";
   let p2pPanelRef;
+  let workspaceSheetRef;
 
   let recentActivity = [];
   let recentLastTool = "";
@@ -130,6 +149,21 @@
   ];
 
   const PREVIEW_THEME_OPTIONS = THEME_OPTIONS.slice(0, 4);
+
+  const TASK_SECTIONS = [
+    { id: "convert", label: "Convert", icon: "sync_alt" },
+    { id: "organize", label: "Organize", icon: "view_kanban" },
+    { id: "compare", label: "Compare", icon: "difference" },
+    { id: "share", label: "Share", icon: "wifi_tethering" },
+    { id: "results", label: "Results", icon: "download_done" },
+    { id: "textdiff", label: "Text Diff", icon: "text_compare" }
+  ];
+
+  const UTILITY_SECTIONS = [
+    { id: "history", label: "History", icon: "history" },
+    { id: "performance", label: "Performance", icon: "query_stats" },
+    { id: "textdiff", label: "Text Diff", icon: "text_compare" }
+  ];
 
   let currentTheme = "ocean";
   let colorMode = "light";
@@ -158,6 +192,83 @@
     currentTheme = theme;
   }
 
+  function getActiveTask() {
+    if (topViewTab === "textdiff") return "textdiff";
+    if (p2pOpen) return "share";
+    if (resultsBatch > 0) return "results";
+    if (compareWorkspaceFiles.length === 2) return "compare";
+    if (route === ROUTES.PDF || route === ROUTES.IMAGE || route === ROUTES.CONTENT) return "convert";
+    if (route === ROUTES.FILE || route === ROUTES.DJVU) return "organize";
+    return "convert";
+  }
+
+  function activateTask(taskId) {
+    if (taskId === "share") {
+      if (!p2pOpen) {
+        p2pOpen = true;
+      }
+      tick().then(scrollToP2P);
+      return;
+    }
+
+    if (taskId === "results") {
+      scrollToResults();
+      return;
+    }
+
+    if (taskId === "textdiff") {
+      topViewTab = "textdiff";
+      return;
+    }
+
+    if (taskId === "compare" || taskId === "organize" || taskId === "convert") {
+      scrollToFiles();
+    }
+  }
+
+  async function activateUtility(toolId) {
+    workspaceControlsOpen = true;
+
+    if (toolId === "history") {
+      topViewTab = "activity";
+    } else if (toolId === "performance") {
+      if (!perfPanelEnabled) return;
+      topViewTab = "performance";
+    } else if (toolId === "textdiff") {
+      topViewTab = "textdiff";
+    }
+
+    await tick();
+    workspaceSheetRef?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function isUtilityActive(toolId) {
+    if (toolId === "history") return workspaceControlsOpen && topViewTab === "activity";
+    if (toolId === "performance") return workspaceControlsOpen && topViewTab === "performance";
+    if (toolId === "textdiff") return workspaceControlsOpen && topViewTab === "textdiff";
+    return false;
+  }
+
+  function jumpToIngestion() {
+    dropzoneRef?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function openIntakeModal() {
+    intakeModalOpen = true;
+    intakeCollapsed = true;
+  }
+
+  function closeIntakeModal() {
+    intakeModalOpen = false;
+  }
+
+  function shouldSkipGlobalShortcut(target) {
+    if (!target) return false;
+    const tag = `${target.tagName || ""}`.toLowerCase();
+    if (target.isContentEditable) return true;
+    return tag === "input" || tag === "textarea" || tag === "select";
+  }
+
   onMount(() => {
     try {
       const storedTheme = localStorage.getItem("upkaran-theme");
@@ -169,10 +280,10 @@
       if (storedMode === "light" || storedMode === "dark") {
         colorMode = storedMode;
       } else {
-        colorMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        colorMode = "light";
       }
     } catch {
-      colorMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      colorMode = "light";
     }
 
     recentActivity = getSessionHistory();
@@ -186,8 +297,41 @@
 
     applyAppearance();
 
+    const onGlobalKeydown = (event) => {
+      if (event.key === "Escape" && intakeModalOpen) {
+        event.preventDefault();
+        closeIntakeModal();
+        return;
+      }
+
+      if (event.key === "Escape" && shortcutHelpOpen) {
+        event.preventDefault();
+        shortcutHelpOpen = false;
+        return;
+      }
+
+      if (shouldSkipGlobalShortcut(event.target)) return;
+      if (!event.altKey || event.ctrlKey || event.metaKey) return;
+
+      if (event.key === "/") {
+        event.preventDefault();
+        shortcutHelpOpen = !shortcutHelpOpen;
+        return;
+      }
+
+      if (!/^\d$/.test(event.key)) return;
+      const index = Number(event.key) - 1;
+      if (index < 0 || index >= availableTypeTabs.length) return;
+
+      event.preventDefault();
+      onTypeTabSelect(availableTypeTabs[index].tab);
+    };
+
+    window.addEventListener("keydown", onGlobalKeydown);
+
     return () => {
       unsubscribeInstall?.();
+      window.removeEventListener("keydown", onGlobalKeydown);
       pwaControllerRef?.dispose();
       pwaControllerRef = null;
     };
@@ -295,13 +439,41 @@
     }
   ];
 
-  $: ({ activeFiles: baseActiveFiles, route: baseRoute } = resolveRouteFromSelection(entries, selectedFiles));
+  $: availableTypeTabs = resolveTypeTabs(entries);
+  $: {
+    if (availableTypeTabs.length === 1) {
+      activeTypeTab = availableTypeTabs[0].tab;
+    } else if (availableTypeTabs.length === 0) {
+      activeTypeTab = "";
+    } else if (!availableTypeTabs.some((item) => item.tab === activeTypeTab)) {
+      activeTypeTab = "";
+    }
+  }
+
+  $: typeScopedEntries = activeTypeTab
+    ? entries.filter((entry) => mapKindToTypeTab(entry.kind) === activeTypeTab)
+    : entries;
+
+  $: scopedSelectedFiles = activeTypeTab
+    ? selectedFiles.filter((entry) => mapKindToTypeTab(entry.kind) === activeTypeTab)
+    : selectedFiles;
+
+  $: ({ activeFiles: baseActiveFiles, route: baseRoute } = resolveRouteFromSelection(typeScopedEntries, scopedSelectedFiles));
   $: {
     const valid = new Set(baseActiveFiles.map((file) => file.id));
     modalSelectedIds = modalSelectedIds.filter((id) => valid.has(id));
   }
 
   $: modalSelectedFiles = baseActiveFiles.filter((file) => modalSelectedIds.includes(file.id));
+  $: modalKindGroups = Object.entries(
+    baseActiveFiles.reduce((acc, file) => {
+      const key = file.kind || "file";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {})
+  )
+    .map(([kind, count]) => ({ kind, count }))
+    .sort((a, b) => b.count - a.count);
   $: effectiveFiles = modalSelectedFiles.length > 0 ? modalSelectedFiles : baseActiveFiles;
   $: route = resolveRoute(effectiveFiles);
   $: effectiveDjvuFiles = effectiveFiles.filter((entry) => entry.kind === "djvu");
@@ -317,15 +489,21 @@
           ? effectiveDjvuFiles
           : [];
   $: compareWorkspaceFiles = route === ROUTES.CONTENT && effectiveContentFiles.length === 2 ? effectiveContentFiles : [];
+  $: showCompareWorkspace = compareWorkspaceFiles.length === 2;
 
-  $: if (baseRoute === ROUTES.MIXED && modalSelectedFiles.length === 0) {
+  $: if (baseRoute === ROUTES.MIXED && modalSelectedFiles.length === 0 && availableTypeTabs.length < 2) {
     mixedModalOpen = true;
   }
 
-  $: if (baseRoute !== ROUTES.MIXED) {
+  $: if (baseRoute !== ROUTES.MIXED || availableTypeTabs.length >= 2) {
     mixedModalOpen = false;
     modalError = "";
     modalSelectedIds = [];
+  }
+
+  $: {
+    const tabFromRoute = routeToTypeTab(route);
+    workspaceTitle = routeWorkspaceTitle(route, activeTypeTab || tabFromRoute);
   }
 
   $: if (!perfPanelEnabled && topViewTab === "performance") {
@@ -520,33 +698,61 @@
     entries = event.detail.files;
     const valid = new Set(entries.map((entry) => entry.id));
     selectedFiles = selectedFiles.filter((entry) => valid.has(entry.id));
-    if (forensicsEntry && !valid.has(forensicsEntry.id)) forensicsEntry = null;
+    if (forensicsEntry && !valid.has(forensicsEntry.id)) {
+      forensicsEntry = null;
+      forensicsModalOpen = false;
+    }
   }
 
-  function toggleModalFile(id) {
+  function onFocusGroup(event) {
+    const { tab, selectedIds } = event.detail || {};
+    if (!tab || !Array.isArray(selectedIds)) return;
+
+    const selectedSet = new Set(selectedIds);
+    activeTypeTab = tab;
+    selectedFiles = entries.filter((entry) => selectedSet.has(entry.id));
+    modalSelectedIds = [];
     modalError = "";
-    if (modalSelectedIds.includes(id)) {
-      modalSelectedIds = modalSelectedIds.filter((existing) => existing !== id);
-      return;
-    }
-    modalSelectedIds = [...modalSelectedIds, id];
-  }
-
-  function applyModalSelection() {
-    if (modalSelectedIds.length === 0) {
-      modalError = "Select one or more files.";
-      return;
-    }
-
-    const chosen = baseActiveFiles.filter((file) => modalSelectedIds.includes(file.id));
-    const chosenRoute = resolveRoute(chosen);
-    if (chosenRoute === ROUTES.MIXED) {
-      modalError = "Choose files of the same type to continue.";
-      return;
-    }
-
     mixedModalOpen = false;
+
+    showToast({
+      message: `Focused ${typeTabLabel(tab)} workspace`,
+      type: "success"
+    });
+  }
+
+  function openForensics(entry) {
+    forensicsEntry = entry;
+    forensicsModalOpen = true;
+  }
+
+  function closeForensicsModal() {
+    forensicsModalOpen = false;
+    forensicsEntry = null;
+  }
+
+  function chooseModalKind(kind) {
+    const chosen = baseActiveFiles.filter((file) => file.kind === kind);
+    if (chosen.length < 1) {
+      modalError = "No files in this group.";
+      return;
+    }
+
+    modalSelectedIds = chosen.map((file) => file.id);
     modalError = "";
+    mixedModalOpen = false;
+    showToast({
+      message: `Selected ${chosen.length} ${kindLabel(kind)} file${chosen.length === 1 ? "" : "s"}`,
+      type: "success"
+    });
+  }
+
+  function onTypeTabSelect(tab) {
+    activeTypeTab = tab;
+    modalSelectedIds = [];
+    modalError = "";
+    mixedModalOpen = false;
+    selectedFiles = entries.filter((entry) => mapKindToTypeTab(entry.kind) === tab);
   }
 
   function clearAll() {
@@ -554,6 +760,8 @@
     selectedFiles = [];
     modalSelectedIds = [];
     mixedModalOpen = false;
+    forensicsEntry = null;
+    forensicsModalOpen = false;
     processing = false;
     progress = 0;
     error = "";
@@ -652,14 +860,95 @@
 >
   <header class="hero" in:fly={{ y: -12, duration: 260 }}>
     <div class="hero-text">
-      <h1>Upkaran Offline Suite</h1>
-      <p>PDF, image, and file operations with zero backend and full offline capability.</p>
+      <h1>{workspaceTitle}</h1>
+      <p>Local-first operations with dynamic tool visibility by file type.</p>
     </div>
-    <button class="p2p-btn" class:is-active={p2pOpen} type="button" on:click={toggleP2P} aria-expanded={p2pOpen} aria-pressed={p2pOpen}>
-      <span class="material-symbols-outlined">wifi_tethering</span>
-      {p2pOpen ? "P2P Transfer Active" : "P2P Transfer"}
-    </button>
+    <div class="hero-actions">
+      <button class="secondary quick-action" type="button" on:click={jumpToIngestion}>
+        <span class="material-symbols-outlined" aria-hidden="true">upload_file</span>
+        Start with files
+      </button>
+      <button class="secondary quick-action" class:is-active={workspaceControlsOpen} type="button" on:click={() => (workspaceControlsOpen = !workspaceControlsOpen)}>
+        <span class="material-symbols-outlined" aria-hidden="true">tune</span>
+        {workspaceControlsOpen ? "Hide Controls" : "Workspace Controls"}
+      </button>
+      <button class="p2p-btn" class:is-active={p2pOpen} type="button" on:click={toggleP2P} aria-expanded={p2pOpen} aria-pressed={p2pOpen}>
+        <span class="material-symbols-outlined">wifi_tethering</span>
+        {p2pOpen ? "P2P Transfer Active" : "P2P Transfer"}
+      </button>
+    </div>
   </header>
+
+  {#if availableTypeTabs.length > 1}
+    <section class="panel type-tabs-shell" aria-label="File type workspaces">
+      <div class="type-tabs-head">
+        <h2>Choose a file family</h2>
+        <span>{availableTypeTabs.length} types detected · Alt+1..9</span>
+      </div>
+      <div class="type-tabs" role="tablist" aria-label="File type tabs">
+        {#each availableTypeTabs as typeInfo (typeInfo.tab)}
+          <button
+            type="button"
+            role="tab"
+            class="secondary type-tab"
+            class:is-active={activeTypeTab === typeInfo.tab}
+            aria-selected={activeTypeTab === typeInfo.tab}
+            on:click={() => onTypeTabSelect(typeInfo.tab)}
+          >
+            <span>{typeTabLabel(typeInfo.tab)}</span>
+            <small>{typeInfo.count}</small>
+          </button>
+        {/each}
+      </div>
+      {#if !activeTypeTab}
+        <p class="type-tabs-prompt">Select a tab to reveal tools for that file type.</p>
+      {/if}
+    </section>
+  {/if}
+
+  {#if entries.length > 0 || resultsBatch > 0 || p2pOpen}
+    <section class="panel task-shell" aria-label="Primary tasks" in:fly={{ y: -8, duration: 220 }}>
+      <p class="task-shell-caption">Primary workflow</p>
+      <div class="task-shell-nav" role="tablist" aria-label="Primary workflow navigation">
+        {#each TASK_SECTIONS as task}
+          <button
+            type="button"
+            class="secondary task-tab"
+            role="tab"
+            class:is-active={getActiveTask() === task.id}
+            aria-selected={getActiveTask() === task.id}
+            on:click={() => activateTask(task.id)}
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">{task.icon}</span>
+            <span>{task.label}</span>
+          </button>
+        {/each}
+      </div>
+    </section>
+  {/if}
+
+  <section class="panel utility-shell" aria-label="Other tools quick access">
+    <div class="utility-shell-head">
+      <p class="utility-shell-caption">Other tools</p>
+      <span>History, performance, and text diff</span>
+    </div>
+    <div class="utility-shell-nav" role="tablist" aria-label="Other tools">
+      {#each UTILITY_SECTIONS as tool}
+        <button
+          type="button"
+          class="secondary utility-tab"
+          role="tab"
+          class:is-active={isUtilityActive(tool.id)}
+          aria-selected={isUtilityActive(tool.id)}
+          on:click={() => activateUtility(tool.id)}
+          disabled={tool.id === "performance" && !perfPanelEnabled}
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">{tool.icon}</span>
+          <span>{tool.label}</span>
+        </button>
+      {/each}
+    </div>
+  </section>
 
   {#if p2pOpen}
     <section class="panel p2p-active-banner" aria-live="polite">
@@ -673,141 +962,178 @@
     </button>
   {/if}
 
-  <section class="panel top-view-tabs" aria-label="Top views">
-    <div class="top-view-tablist" role="tablist" aria-label="Top view navigation">
-      <button
-        type="button"
-        role="tab"
-        class="secondary top-view-tab"
-        class:is-active={topViewTab === "appearance"}
-        aria-selected={topViewTab === "appearance"}
-        on:click={() => (topViewTab = "appearance")}
-      >
-        Appearance
-      </button>
-      <button
-        type="button"
-        role="tab"
-        class="secondary top-view-tab"
-        class:is-active={topViewTab === "activity"}
-        aria-selected={topViewTab === "activity"}
-        on:click={() => (topViewTab = "activity")}
-      >
-        Recent Activity
-      </button>
-      <button
-        type="button"
-        role="tab"
-        class="secondary top-view-tab"
-        class:is-active={topViewTab === "performance"}
-        aria-selected={topViewTab === "performance"}
-        on:click={() => (topViewTab = "performance")}
-        disabled={!perfPanelEnabled}
-      >
-        Performance
-      </button>
-    </div>
-  </section>
-
-  {#if topViewTab === "appearance"}
-    <section class="panel appearance-strip" aria-label="Appearance">
-      <div class="appearance-title-wrap">
-        <h2 class="appearance-title">Appearance</h2>
-        <span class="appearance-current">{THEME_OPTIONS.find((t) => t.value === currentTheme)?.label} · {colorMode}</span>
+  {#if workspaceControlsOpen}
+    <section class="panel workspace-sheet" aria-label="Workspace controls" bind:this={workspaceSheetRef}>
+      <div class="workspace-sheet-head">
+        <p class="top-view-label">Workspace controls</p>
+        <div class="workspace-sheet-actions">
+          <button class="secondary shortcuts-help-btn" type="button" on:click={() => (shortcutHelpOpen = true)} title="Shortcut: Alt+/">
+            Shortcuts
+          </button>
+          <button class="secondary shortcuts-help-btn" type="button" on:click={() => (workspaceControlsOpen = false)}>
+            Close
+          </button>
+        </div>
       </div>
 
-      <div class="appearance-controls" role="group" aria-label="Appearance controls">
-        <label for="theme-select">Theme</label>
-        <select id="theme-select" bind:value={currentTheme} aria-label="Select theme">
-          {#each THEME_OPTIONS as option}
-            <option value={option.value}>{option.label}</option>
-          {/each}
-        </select>
-
-        <div class="theme-swatches" role="radiogroup" aria-label="Quick theme selection">
-          {#each PREVIEW_THEME_OPTIONS as option}
-            <button
-              class="secondary theme-swatch"
-              class:is-active={currentTheme === option.value}
-              type="button"
-              role="radio"
-              aria-checked={currentTheme === option.value}
-              aria-label={`Use ${option.label} theme`}
-              title={option.label}
-              on:click={() => setTheme(option.value)}
-            >
-              <span class="swatch-dot swatch-{option.value}" aria-hidden="true"></span>
-            </button>
-          {/each}
-        </div>
-
+      <div class="top-view-tablist" role="tablist" aria-label="Workspace control navigation">
         <button
-          class="secondary mode-toggle"
           type="button"
-          on:click={toggleColorMode}
-          aria-pressed={colorMode === "dark"}
-          aria-label={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          role="tab"
+          class="secondary top-view-tab"
+          class:is-active={topViewTab === "appearance"}
+          aria-selected={topViewTab === "appearance"}
+          on:click={() => (topViewTab = "appearance")}
         >
-          <span class="material-symbols-outlined" aria-hidden="true">
-            {colorMode === "dark" ? "light_mode" : "dark_mode"}
-          </span>
-          {colorMode === "dark" ? "Light mode" : "Dark mode"}
+          Appearance
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="secondary top-view-tab"
+          class:is-active={topViewTab === "activity"}
+          aria-selected={topViewTab === "activity"}
+          on:click={() => (topViewTab = "activity")}
+        >
+          Recent Activity
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="secondary top-view-tab"
+          class:is-active={topViewTab === "performance"}
+          aria-selected={topViewTab === "performance"}
+          on:click={() => (topViewTab = "performance")}
+          disabled={!perfPanelEnabled}
+        >
+          Performance
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="secondary top-view-tab"
+          class:is-active={topViewTab === "textdiff"}
+          aria-selected={topViewTab === "textdiff"}
+          on:click={() => (topViewTab = "textdiff")}
+        >
+          Text Diff
         </button>
       </div>
+
+      {#if topViewTab === "appearance"}
+        <section class="panel appearance-strip" aria-label="Appearance">
+          <div class="appearance-title-wrap">
+            <h2 class="appearance-title">Appearance</h2>
+            <span class="appearance-current">{THEME_OPTIONS.find((t) => t.value === currentTheme)?.label} · {colorMode}</span>
+          </div>
+
+          <div class="appearance-controls" role="group" aria-label="Appearance controls">
+            <label for="theme-select">Theme</label>
+            <select id="theme-select" bind:value={currentTheme} aria-label="Select theme">
+              {#each THEME_OPTIONS as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </select>
+
+            <div class="theme-swatches" role="radiogroup" aria-label="Quick theme selection">
+              {#each PREVIEW_THEME_OPTIONS as option}
+                <button
+                  class="secondary theme-swatch"
+                  class:is-active={currentTheme === option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={currentTheme === option.value}
+                  aria-label={`Use ${option.label} theme`}
+                  title={option.label}
+                  on:click={() => setTheme(option.value)}
+                >
+                  <span class="swatch-dot swatch-{option.value}" aria-hidden="true"></span>
+                </button>
+              {/each}
+            </div>
+
+            <button
+              class="secondary mode-toggle"
+              type="button"
+              on:click={toggleColorMode}
+              aria-pressed={colorMode === "dark"}
+              aria-label={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">
+                {colorMode === "dark" ? "light_mode" : "dark_mode"}
+              </span>
+              {colorMode === "dark" ? "Light mode" : "Dark mode"}
+            </button>
+          </div>
+        </section>
+      {:else if topViewTab === "activity"}
+        <RecentActivity items={recentActivity} lastTool={recentLastTool} on:clear={clearRecentActivity} />
+      {:else if topViewTab === "performance"}
+        <PerfSummaryPanel enabled={perfPanelEnabled} />
+      {:else if topViewTab === "textdiff"}
+        <TextDiffWorkspace />
+      {/if}
     </section>
-  {:else if topViewTab === "activity"}
-    <RecentActivity items={recentActivity} lastTool={recentLastTool} on:clear={clearRecentActivity} />
-  {:else if topViewTab === "performance"}
-    <PerfSummaryPanel enabled={perfPanelEnabled} />
   {/if}
 
-  <Toolbar
-    route={route}
-    processing={processing}
-    selectedCount={selectedFiles.length}
-    on:clear={clearAll}
-    on:secureclear={secureClearData}
-    on:downloadselected={onDownloadSelectedFiles}
-  />
+  {#if entries.length > 0 || resultsBatch > 0}
+    <Toolbar
+      route={route}
+      processing={processing}
+      selectedCount={selectedFiles.length}
+      on:clear={clearAll}
+      on:secureclear={secureClearData}
+      on:downloadselected={onDownloadSelectedFiles}
+    />
+  {/if}
 
-  <InstallCta canInstall={canInstallPwa} installed={pwaInstalled} busy={pwaInstallBusy} on:install={onInstallApp} />
+  {#if canInstallPwa && !pwaInstalled}
+    <InstallCta canInstall={canInstallPwa} installed={pwaInstalled} busy={pwaInstallBusy} on:install={onInstallApp} />
+  {/if}
 
-  <Dropzone bind:this={dropzoneRef} accept={pickerAccept} on:filesadded={(event) => onFilesAdded(event.detail)} />
+  <section class="intake-layout" aria-label="File intake and capability guide">
+    <div class="intake-main">
+      <Dropzone bind:this={dropzoneRef} accept={pickerAccept} on:filesadded={(event) => onFilesAdded(event.detail)} />
+    </div>
 
-  <section class="panel feature-overview" transition:fade>
-    <header class="feature-overview-header">
-      <div>
-        <h2>Everything You Can Do Here</h2>
-        <p>Drop files above to start instantly. This overview helps you discover available tools at a glance.</p>
-      </div>
-      <button
-        class="secondary"
-        type="button"
-        on:click={() => (featureOverviewCollapsed = !featureOverviewCollapsed)}
-        aria-expanded={!featureOverviewCollapsed}
-      >
-        {featureOverviewCollapsed ? "Show" : "Hide"}
-      </button>
-    </header>
+    {#if workspaceControlsOpen}
+      <aside class="panel feature-overview side-overview" transition:fade aria-label="Capabilities side section">
+        <header class="feature-overview-header">
+          <div>
+            <h2>Everything You Can Do Here</h2>
+            <p>Keep this as a side reference while you work. Collapse anytime.</p>
+          </div>
+          <button
+            class="secondary"
+            type="button"
+            on:click={() => (featureOverviewCollapsed = !featureOverviewCollapsed)}
+            aria-expanded={!featureOverviewCollapsed}
+            aria-controls="feature-overview-content"
+          >
+            {featureOverviewCollapsed ? "Expand" : "Collapse"}
+          </button>
+        </header>
 
-    {#if !featureOverviewCollapsed}
-      <div class="feature-grid">
-        {#each featureGroups as group}
-          <article class="feature-card">
-            <h3>{group.title}</h3>
-            <ul>
-              {#each group.items as item}
-                <li>{item}</li>
-              {/each}
-            </ul>
-            {#if group.p2pCta}
-              <button class="secondary card-cta" type="button" on:click={openP2PFromCard}>{group.cta}</button>
-            {:else}
-              <button class="secondary card-cta" type="button" on:click={() => openPickerFromFeature(group)}>{group.cta}</button>
-            {/if}
-          </article>
-        {/each}
-      </div>
+        {#if !featureOverviewCollapsed}
+          <div id="feature-overview-content" class="feature-grid">
+            {#each featureGroups as group}
+              <article class="feature-card">
+                <h3>{group.title}</h3>
+                <ul>
+                  {#each group.items as item}
+                    <li>{item}</li>
+                  {/each}
+                </ul>
+                {#if group.p2pCta}
+                  <button class="secondary card-cta" type="button" on:click={openP2PFromCard}>{group.cta}</button>
+                {:else}
+                  <button class="secondary card-cta" type="button" on:click={() => openPickerFromFeature(group)}>{group.cta}</button>
+                {/if}
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </aside>
     {/if}
   </section>
 
@@ -820,38 +1146,40 @@
   {/if}
 
   <!-- ── Create: Editor workspaces ─────────────────────────────────────── -->
-  <section class="panel create-section">
-    <h2 class="create-title">Create Documents</h2>
-    <div class="create-buttons">
-      <button
-        class="create-btn {activeEditor === 'latex' ? '' : 'secondary'}"
-        type="button"
-        on:click={() => (activeEditor = activeEditor === 'latex' ? null : 'latex')}
-        aria-pressed={activeEditor === 'latex'}
-      >
-        <span class="material-symbols-outlined">functions</span>
-        LaTeX → PDF
-      </button>
-      <button
-        class="create-btn {activeEditor === 'mermaid' ? '' : 'secondary'}"
-        type="button"
-        on:click={() => (activeEditor = activeEditor === 'mermaid' ? null : 'mermaid')}
-        aria-pressed={activeEditor === 'mermaid'}
-      >
-        <span class="material-symbols-outlined">account_tree</span>
-        Mermaid → PDF
-      </button>
-      <button
-        class="create-btn {activeEditor === 'plantuml' ? '' : 'secondary'}"
-        type="button"
-        on:click={() => (activeEditor = activeEditor === 'plantuml' ? null : 'plantuml')}
-        aria-pressed={activeEditor === 'plantuml'}
-      >
-        <span class="material-symbols-outlined">schema</span>
-        PlantUML → PDF
-      </button>
-    </div>
-  </section>
+  {#if workspaceControlsOpen}
+    <section class="panel create-section">
+      <h2 class="create-title">Create Documents</h2>
+      <div class="create-buttons">
+        <button
+          class="create-btn {activeEditor === 'latex' ? '' : 'secondary'}"
+          type="button"
+          on:click={() => (activeEditor = activeEditor === 'latex' ? null : 'latex')}
+          aria-pressed={activeEditor === 'latex'}
+        >
+          <span class="material-symbols-outlined">functions</span>
+          LaTeX → PDF
+        </button>
+        <button
+          class="create-btn {activeEditor === 'mermaid' ? '' : 'secondary'}"
+          type="button"
+          on:click={() => (activeEditor = activeEditor === 'mermaid' ? null : 'mermaid')}
+          aria-pressed={activeEditor === 'mermaid'}
+        >
+          <span class="material-symbols-outlined">account_tree</span>
+          Mermaid → PDF
+        </button>
+        <button
+          class="create-btn {activeEditor === 'plantuml' ? '' : 'secondary'}"
+          type="button"
+          on:click={() => (activeEditor = activeEditor === 'plantuml' ? null : 'plantuml')}
+          aria-pressed={activeEditor === 'plantuml'}
+        >
+          <span class="material-symbols-outlined">schema</span>
+          PlantUML → PDF
+        </button>
+      </div>
+    </section>
+  {/if}
 
   {#if activeEditor === 'latex'}
     <div transition:fade>
@@ -890,38 +1218,54 @@
   {/if}
 
   <div id="files-section" class="content-grid">
-    <FileList files={entries} busy={processing} on:selectionchange={onFileSelectionChange} on:fileschange={onFilesChange} on:forensics={(e) => { forensicsEntry = e.detail; }} />
-
-    {#if forensicsEntry}
-      {#await import("./components/ForensicsView.svelte") then mod}
-        {#key forensicsEntry.id}
-          <svelte:component
-            this={mod.default}
-            entry={forensicsEntry}
-            on:close={() => (forensicsEntry = null)}
-          />
-        {/key}
-      {/await}
-    {:else}
-
-    {#if route === ROUTES.PDF}
-      {#await import("./components/PdfTools.svelte") then mod}
-        <svelte:component
-          this={mod.default}
-          files={effectivePdfFiles}
-          busy={processing}
-          on:processing={(event) => (processing = event.detail)}
-          on:progress={onProgress}
-          on:error={onError}
-          on:output={onOutput}
-        />
-      {/await}
+    {#if entries.length > 0 && !intakeCollapsed && !intakeModalOpen}
+      <aside class="workspace-files" aria-label="File drawer">
+        <div class="workspace-files-controls panel" role="group" aria-label="Intake board controls">
+          <p>Intake board</p>
+          <div>
+            <button class="secondary" type="button" on:click={() => (intakeCollapsed = true)}>Collapse</button>
+            <button class="secondary icon-action-btn" type="button" on:click={openIntakeModal} aria-label="Expand intake board as modal" title="Expand intake board as modal">
+              <span class="material-symbols-outlined" aria-hidden="true">open_in_full</span>
+            </button>
+          </div>
+        </div>
+        <FileList files={entries} busy={processing} on:selectionchange={onFileSelectionChange} on:fileschange={onFilesChange} on:forensics={(e) => openForensics(e.detail)} on:focusgroup={onFocusGroup} />
+      </aside>
+    {:else if entries.length > 0}
+      <aside class="workspace-files workspace-files-collapsed" aria-label="Collapsed file drawer">
+        <section class="panel workspace-files-collapsed-card">
+          <h3>Intake board collapsed</h3>
+          <p>{entries.length} file{entries.length === 1 ? "" : "s"} loaded</p>
+          <div class="workspace-files-collapsed-actions">
+            <button class="secondary" type="button" on:click={() => { intakeCollapsed = false; intakeModalOpen = false; }}>Open inline</button>
+            <button class="secondary icon-action-btn" type="button" on:click={openIntakeModal} aria-label="Open intake board as modal" title="Open intake board as modal">
+              <span class="material-symbols-outlined" aria-hidden="true">open_in_full</span>
+            </button>
+          </div>
+        </section>
+      </aside>
     {/if}
 
-      {#if route === ROUTES.DJVU}
-        {#await import("./components/DjvuTools.svelte") then mod}
-          <svelte:component
-            this={mod.default}
+    <section class="workspace-tools" aria-label="Active tool workspace">
+      {#if availableTypeTabs.length > 1 && !activeTypeTab}
+        <section class="panel tab-selection-prompt" aria-label="Select a file type tab">
+          <h3>Select a file type tab</h3>
+          <p>Choose PDF, Image, Archive, Text, Code, or Video above to reveal the relevant tools.</p>
+        </section>
+      {:else}
+        {#if route === ROUTES.PDF}
+          <PdfTools
+            files={effectivePdfFiles}
+            busy={processing}
+            on:processing={(event) => (processing = event.detail)}
+            on:progress={onProgress}
+            on:error={onError}
+            on:output={onOutput}
+          />
+        {/if}
+
+        {#if route === ROUTES.DJVU}
+          <DjvuTools
             files={effectiveDjvuFiles}
             busy={processing}
             on:processing={(event) => (processing = event.detail)}
@@ -929,105 +1273,144 @@
             on:error={onError}
             on:output={onOutput}
           />
-        {/await}
+        {/if}
+
+        {#if route === ROUTES.IMAGE}
+          <ImageTools
+            files={effectiveImageFiles}
+            busy={processing}
+            on:processing={(event) => (processing = event.detail)}
+            on:progress={onProgress}
+            on:error={onError}
+            on:output={onOutput}
+          />
+        {/if}
+
+        {#if activeTypeTab === "archive"}
+          <section class="panel type-scaffold-card" aria-label="Archive tools">
+            <h3>Archive Workspace</h3>
+            <p>Use archive packaging tools below. Deep archive extraction/listing is staged for the next iteration.</p>
+          </section>
+        {/if}
+
+        {#if activeTypeTab === "video"}
+          <section class="panel type-scaffold-card" aria-label="Video tools">
+            <h3>Video Workspace</h3>
+            <p>Video metadata and transcode tools are coming next. This tab is now reserved and type-aware.</p>
+          </section>
+        {/if}
+
+        {#if route === ROUTES.FILE && activeTypeTab !== "video"}
+          <FileTools
+            files={effectiveFiles}
+            busy={processing}
+            on:processing={(event) => (processing = event.detail)}
+            on:progress={onProgress}
+            on:error={onError}
+            on:output={onOutput}
+          />
+        {/if}
+
+        {#if route === ROUTES.CONTENT && !showCompareWorkspace}
+          <ContentTools
+            files={effectiveContentFiles}
+            busy={processing}
+            on:processing={(event) => (processing = event.detail)}
+            on:progress={onProgress}
+            on:error={onError}
+            on:output={onOutput}
+          />
+        {/if}
+
+        {#if showCompareWorkspace}
+          <CompareWorkspace files={compareWorkspaceFiles} />
+        {/if}
+
+        {#if batchEligibleFiles.length > 1 && !showCompareWorkspace}
+          <BatchOperations
+            files={batchEligibleFiles}
+            busy={processing}
+            on:processing={(event) => (processing = event.detail)}
+            on:progress={onProgress}
+            on:error={onError}
+            on:output={onOutput}
+          />
+        {/if}
       {/if}
+    </section>
 
-    {#if route === ROUTES.IMAGE}
-      {#await import("./components/ImageTools.svelte") then mod}
-        <svelte:component
-          this={mod.default}
-          files={effectiveImageFiles}
-          busy={processing}
-          on:processing={(event) => (processing = event.detail)}
-          on:progress={onProgress}
-          on:error={onError}
-          on:output={onOutput}
-        />
-      {/await}
-    {/if}
-
-    {#if route === ROUTES.FILE}
-      {#await import("./components/FileTools.svelte") then mod}
-        <svelte:component
-          this={mod.default}
-          files={effectiveFiles}
-          busy={processing}
-          on:processing={(event) => (processing = event.detail)}
-          on:progress={onProgress}
-          on:error={onError}
-          on:output={onOutput}
-        />
-      {/await}
-    {/if}
-
-    {#if route === ROUTES.CONTENT}
-      {#await import("./components/ContentTools.svelte") then mod}
-        <svelte:component
-          this={mod.default}
-          files={effectiveContentFiles}
-          busy={processing}
-          on:processing={(event) => (processing = event.detail)}
-          on:progress={onProgress}
-          on:error={onError}
-          on:output={onOutput}
-        />
-      {/await}
-    {/if}
-
-    {#if compareWorkspaceFiles.length === 2}
-      <CompareWorkspace files={compareWorkspaceFiles} />
-    {/if}
-
-    {#if batchEligibleFiles.length > 1}
-      <BatchOperations
-        files={batchEligibleFiles}
-        busy={processing}
-        on:processing={(event) => (processing = event.detail)}
-        on:progress={onProgress}
-        on:error={onError}
-        on:output={onOutput}
-      />
-    {/if}
-    {/if}
   </div>
+
+  {#if forensicsEntry && forensicsModalOpen}
+    <div class="modal-backdrop forensics-modal-backdrop" transition:fade>
+      <div class="panel modal forensics-modal" role="dialog" aria-modal="true" aria-label="Forensics inspector">
+        <ForensicsDrawer entry={forensicsEntry} on:collapse={() => (forensicsModalOpen = false)} on:close={closeForensicsModal} />
+      </div>
+    </div>
+  {/if}
+
+  {#if intakeModalOpen}
+    <div class="modal-backdrop intake-modal-backdrop" transition:fade>
+      <div class="panel modal intake-modal" role="dialog" aria-modal="true" aria-label="Expanded intake board">
+        <header class="intake-modal-head">
+          <h3>Intake Board</h3>
+          <div class="intake-modal-actions">
+            <button class="secondary" type="button" on:click={() => { intakeCollapsed = false; intakeModalOpen = false; }}>Dock left</button>
+            <button class="secondary" type="button" on:click={closeIntakeModal}>Close</button>
+          </div>
+        </header>
+        <FileList files={entries} busy={processing} on:selectionchange={onFileSelectionChange} on:fileschange={onFilesChange} on:forensics={(e) => openForensics(e.detail)} on:focusgroup={onFocusGroup} />
+      </div>
+    </div>
+  {/if}
 
   {#if mixedModalOpen}
     <div class="modal-backdrop" transition:fade>
       <div class="panel modal" role="dialog" aria-modal="true" aria-label="Choose files for operation">
         <h3>Mixed file selection</h3>
-        <p>Select the files to operate on. Choose one file type per operation.</p>
+        <p>Choose one file family to continue. The matching tool will open immediately.</p>
 
-        <ul>
-          {#each baseActiveFiles as item (item.id)}
-            <li>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={modalSelectedIds.includes(item.id)}
-                  on:change={() => toggleModalFile(item.id)}
-                />
-                <span>{item.name}</span>
-                <small>{item.kind.toUpperCase()}</small>
-              </label>
-            </li>
+        <div class="modal-kind-grid" role="list" aria-label="File type groups">
+          {#each modalKindGroups as group (group.kind)}
+            <button
+              type="button"
+              class="secondary modal-kind-card"
+              on:click={() => chooseModalKind(group.kind)}
+            >
+              <span class="modal-kind-title">{kindLabel(group.kind)}</span>
+              <span class="modal-kind-count">{group.count} file{group.count === 1 ? "" : "s"}</span>
+            </button>
           {/each}
-        </ul>
+        </div>
 
         {#if modalError}
           <small class="modal-error">{modalError}</small>
         {/if}
 
         <div class="modal-actions">
-          <button class="secondary" type="button" on:click={() => (modalSelectedIds = [])}>Reset</button>
-          <button type="button" on:click={applyModalSelection}>Apply</button>
+          <button class="secondary" type="button" on:click={() => { mixedModalOpen = false; modalSelectedIds = []; }}>Cancel</button>
         </div>
       </div>
     </div>
   {/if}
 
-  {#await import("./components/ResultsDrawer.svelte") then mod}
-    <svelte:component this={mod.default} newBatch={resultsBatch} />
-  {/await}
+  {#if shortcutHelpOpen}
+    <div class="modal-backdrop" transition:fade>
+      <div class="panel modal shortcuts-modal" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+        <h3>Keyboard shortcuts</h3>
+        <ul class="shortcut-list">
+          <li><strong>Alt+1..9</strong><span>Switch active file-type tab</span></li>
+          <li><strong>Alt+/</strong><span>Open or close this shortcuts dialog</span></li>
+          <li><strong>Esc</strong><span>Close shortcuts dialog</span></li>
+        </ul>
+        <div class="modal-actions">
+          <button class="secondary" type="button" on:click={() => (shortcutHelpOpen = false)}>Close</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <ResultsDrawer newBatch={resultsBatch} />
 
   <section
     id="fallback-resources"
@@ -1088,7 +1471,7 @@
 
 <style>
   main {
-    max-width: 980px;
+    max-width: 1320px;
     margin: 0 auto;
     padding: 1.2rem;
     display: grid;
@@ -1144,7 +1527,7 @@
 
 
   .hero {
-    padding: 0.4rem 0.1rem 0.6rem;
+    padding: 0.4rem 0.1rem 0.45rem;
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
@@ -1152,8 +1535,24 @@
     flex-wrap: wrap;
   }
 
+  .hero-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+  }
+
   .hero-text {
     min-width: 0;
+  }
+
+  .appbar-kicker {
+    margin: 0;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--md-sys-color-on-surface-variant);
   }
 
   h1 {
@@ -1167,8 +1566,221 @@
     color: var(--md-sys-color-on-surface-variant);
   }
 
-  .top-view-tabs {
-    padding: 0.55rem 0.7rem;
+  .type-tabs-shell {
+    padding: 0.8rem 0.9rem;
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  .type-tabs-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+  }
+
+  .type-tabs-head h2 {
+    margin: 0;
+    font-size: 0.9rem;
+  }
+
+  .type-tabs-head span {
+    color: var(--md-sys-color-on-surface-variant);
+    font-size: 0.75rem;
+  }
+
+  .type-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+
+  .type-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.42rem;
+    border-radius: 999px;
+    padding: 0.4rem 0.72rem;
+  }
+
+  .type-tab.is-active {
+    border-color: color-mix(in srgb, var(--theme-accent) 60%, var(--md-sys-color-outline));
+    background: color-mix(in srgb, var(--theme-accent) 18%, var(--md-sys-color-surface));
+  }
+
+  .type-tab small {
+    margin: 0;
+    min-width: 1.2rem;
+    height: 1.2rem;
+    border-radius: 999px;
+    display: inline-grid;
+    place-items: center;
+    font-size: 0.68rem;
+    background: color-mix(in srgb, var(--md-sys-color-primary) 16%, var(--md-sys-color-surface));
+    color: var(--md-sys-color-on-surface);
+  }
+
+  .type-tabs-prompt {
+    margin: 0;
+    font-size: 0.79rem;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .quick-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.5rem 0.92rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
+
+  .quick-action .material-symbols-outlined {
+    font-size: 1rem;
+  }
+
+  .quick-action.is-active {
+    border-color: color-mix(in srgb, var(--md-sys-color-primary) 48%, var(--md-sys-color-outline-variant));
+    background: color-mix(in srgb, var(--md-sys-color-primary-container) 62%, var(--md-sys-color-surface));
+    color: var(--md-sys-color-on-surface);
+  }
+
+  .task-shell {
+    padding: 0.72rem 0.8rem;
+    display: grid;
+    gap: 0.58rem;
+    border-top: 3px solid color-mix(in srgb, var(--theme-accent) 48%, transparent);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 82%, var(--theme-accent) 18%);
+  }
+
+  .task-shell-caption {
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .task-shell-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.42rem;
+    flex-wrap: wrap;
+  }
+
+  .task-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.34rem;
+    padding: 0.48rem 0.8rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border: 1px solid var(--md-sys-color-outline-variant);
+  }
+
+  .task-tab .material-symbols-outlined {
+    font-size: 0.98rem;
+  }
+
+  .task-tab.is-active {
+    background: color-mix(in srgb, var(--theme-accent) 16%, var(--md-sys-color-surface));
+    border-color: color-mix(in srgb, var(--theme-accent) 52%, var(--md-sys-color-outline-variant));
+    color: var(--md-sys-color-on-surface);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-accent) 20%, transparent);
+  }
+
+  .utility-shell {
+    padding: 0.72rem 0.8rem;
+    display: grid;
+    gap: 0.58rem;
+    border-top: 0;
+    border-left: 2px solid color-mix(in srgb, var(--md-sys-color-outline) 24%, transparent);
+    background: var(--md-sys-color-surface-container-low);
+    position: sticky;
+    top: 0.55rem;
+    z-index: 32;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  }
+
+  .utility-shell-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.55rem;
+  }
+
+  .utility-shell-head span {
+    font-size: 0.74rem;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .utility-shell-caption {
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .utility-shell-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.42rem;
+    flex-wrap: wrap;
+  }
+
+  .utility-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.34rem;
+    padding: 0.48rem 0.8rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border: 1px solid var(--md-sys-color-outline-variant);
+  }
+
+  .utility-tab .material-symbols-outlined {
+    font-size: 0.98rem;
+  }
+
+  .utility-tab.is-active {
+    background: color-mix(in srgb, var(--theme-accent) 16%, var(--md-sys-color-surface));
+    border-color: color-mix(in srgb, var(--theme-accent) 52%, var(--md-sys-color-outline-variant));
+    color: var(--md-sys-color-on-surface);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-accent) 20%, transparent);
+  }
+
+  .workspace-sheet {
+    padding: 0.7rem;
+    display: grid;
+    gap: 0.6rem;
+  }
+
+  .workspace-sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.55rem;
+  }
+
+  .workspace-sheet-actions {
+    display: inline-flex;
+    gap: 0.38rem;
+  }
+
+  .top-view-label {
+    margin: 0;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .shortcuts-help-btn {
+    font-size: 0.68rem;
+    padding: 0.34rem 0.6rem;
   }
 
   .top-view-tablist {
@@ -1415,11 +2027,176 @@
 
   .content-grid {
     display: grid;
+    gap: 1.1rem;
+    grid-template-columns: minmax(280px, 330px) minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .workspace-files,
+  .workspace-tools {
+    min-width: 0;
+  }
+
+  .workspace-files {
+    position: sticky;
+    top: 0.75rem;
+    align-self: start;
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .workspace-files-controls {
+    padding: 0.5rem 0.6rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .workspace-files-controls p {
+    margin: 0;
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .workspace-files-controls div {
+    display: inline-flex;
+    gap: 0.35rem;
+  }
+
+  .icon-action-btn {
+    width: 2rem;
+    height: 2rem;
+    min-width: 2rem;
+    padding: 0;
+    display: inline-grid;
+    place-items: center;
+  }
+
+  .icon-action-btn .material-symbols-outlined {
+    font-size: 1rem;
+  }
+
+  .workspace-files-collapsed {
+    position: static;
+    align-self: start;
+  }
+
+  .workspace-files-collapsed-card {
+    padding: 0.85rem;
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  .workspace-files-collapsed-card h3 {
+    margin: 0;
+    font-size: 0.92rem;
+  }
+
+  .workspace-files-collapsed-card p {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .workspace-files-collapsed-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .workspace-tools {
+    display: grid;
     gap: 1rem;
+  }
+
+  .tab-selection-prompt {
+    padding: 1rem;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 92%, var(--md-sys-color-primary) 8%);
+  }
+
+  .tab-selection-prompt h3 {
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  .tab-selection-prompt p {
+    margin: 0.45rem 0 0;
+    color: var(--md-sys-color-on-surface-variant);
+    font-size: 0.86rem;
+  }
+
+  .type-scaffold-card {
+    padding: 0.95rem;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 92%, var(--theme-accent) 8%);
+  }
+
+  .type-scaffold-card h3 {
+    margin: 0;
+    font-size: 0.96rem;
+  }
+
+  .type-scaffold-card p {
+    margin: 0.42rem 0 0;
+    font-size: 0.84rem;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .shortcuts-modal {
+    width: min(440px, 92vw);
+  }
+
+  .shortcut-list {
+    list-style: none;
+    margin: 0.6rem 0 0;
+    padding: 0;
+    display: grid;
+    gap: 0.45rem;
+  }
+
+  .shortcut-list li {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 10px;
+    padding: 0.45rem 0.55rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.55rem;
+    font-size: 0.76rem;
+  }
+
+  .shortcut-list li strong {
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+  }
+
+  .shortcut-list li span {
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .intake-layout {
+    display: grid;
+    gap: 0.85rem;
+    align-items: start;
+  }
+
+  .intake-main {
+    min-width: 0;
   }
 
   .feature-overview {
     padding: 1rem;
+  }
+
+  .side-overview {
+    position: sticky;
+    top: 0.75rem;
+    max-height: calc(100vh - 1.5rem);
+    overflow: auto;
   }
 
   .feature-overview > header {
@@ -1450,7 +2227,7 @@
 
   .feature-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    grid-template-columns: 1fr;
     gap: 0.65rem;
   }
 
@@ -1520,26 +2297,34 @@
     overflow: auto;
   }
 
-  .modal li {
+  .modal-kind-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.5rem;
+  }
+
+  .modal-kind-card {
+    border-radius: 2px;
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 10px;
-    padding: 0.45rem 0.6rem;
+    padding: 0.65rem 0.7rem;
+    display: grid;
+    gap: 0.18rem;
+    justify-items: start;
+    text-align: left;
     background: var(--md-sys-color-surface-container-low);
   }
 
-  .modal label {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 0.45rem;
-    margin: 0;
-    min-width: 0;
+  .modal-kind-title {
+    font-size: 0.82rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--md-sys-color-on-surface);
   }
 
-  .modal label span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .modal-kind-count {
+    font-size: 0.74rem;
+    color: var(--md-sys-color-on-surface-variant);
   }
 
   .modal small {
@@ -1559,6 +2344,48 @@
     display: flex;
     justify-content: flex-end;
     gap: 0.5rem;
+  }
+
+  .intake-modal-backdrop {
+    z-index: 34;
+    align-items: start;
+    padding-top: 3.8rem;
+  }
+
+  .intake-modal {
+    width: min(760px, 96vw);
+    max-height: calc(100vh - 5rem);
+    overflow: auto;
+  }
+
+  .intake-modal-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.65rem;
+    margin-bottom: 0.7rem;
+  }
+
+  .intake-modal-head h3 {
+    margin: 0;
+  }
+
+  .intake-modal-actions {
+    display: inline-flex;
+    gap: 0.4rem;
+  }
+
+  .forensics-modal-backdrop {
+    z-index: 35;
+    align-items: start;
+    padding-top: 3.8rem;
+  }
+
+  .forensics-modal {
+    width: min(980px, 97vw);
+    max-height: calc(100vh - 5rem);
+    overflow: auto;
+    padding: 0.3rem;
   }
 
   /* Create section */
@@ -1599,7 +2426,44 @@
   @media (max-width: 740px) {
     .hero-actions {
       width: 100%;
-      justify-items: stretch;
+      justify-content: stretch;
+    }
+
+    .hero-actions > button {
+      width: 100%;
+      justify-content: center;
+    }
+
+    .task-shell-nav {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
+    .task-tab {
+      width: 100%;
+      justify-content: center;
+    }
+
+    .utility-shell-head {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .utility-shell {
+      position: static;
+      top: auto;
+      z-index: auto;
+      box-shadow: none;
+    }
+
+    .utility-shell-nav {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
+    .utility-tab {
+      width: 100%;
+      justify-content: center;
     }
 
     .top-view-tablist {
@@ -1658,6 +2522,84 @@
       padding: 0.85rem;
     }
 
+    .intake-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .content-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .workspace-files,
+    .workspace-tools {
+      position: static;
+      width: auto;
+      right: auto;
+      top: auto;
+      max-height: none;
+      overflow: visible;
+      box-shadow: none;
+      border-radius: 0;
+    }
+
+    .workspace-files-controls {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .workspace-files-controls div {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
+    .intake-modal-backdrop {
+      padding-top: 1rem;
+    }
+
+    .intake-modal {
+      width: 100%;
+      max-height: 90vh;
+    }
+
+    .forensics-modal-backdrop {
+      padding-top: 1rem;
+    }
+
+    .forensics-modal {
+      width: 100%;
+      max-height: 90vh;
+    }
+
+    .intake-modal-head {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .intake-modal-actions {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
+    .side-overview {
+      position: static;
+      max-height: none;
+      overflow: visible;
+    }
+
+
+  @media (min-width: 980px) {
+    .intake-layout {
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+      gap: 0.9rem;
+    }
+  }
+
+  @media (max-width: 1200px) {
+    .content-grid {
+      grid-template-columns: minmax(260px, 310px) minmax(0, 1fr);
+    }
+  }
     .feature-overview-header {
       flex-direction: column;
       align-items: stretch;
@@ -1671,28 +2613,6 @@
       width: 100%;
       max-height: 85vh;
       overflow: auto;
-    }
-
-    .modal label {
-      grid-template-columns: auto minmax(0, 1fr);
-      grid-template-areas:
-        "check name"
-        ". type";
-      align-items: start;
-      row-gap: 0.2rem;
-    }
-
-    .modal label input {
-      grid-area: check;
-      margin-top: 0.15rem;
-    }
-
-    .modal label span {
-      grid-area: name;
-    }
-
-    .modal label small {
-      grid-area: type;
     }
 
     .modal-actions {

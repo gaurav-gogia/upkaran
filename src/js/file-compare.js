@@ -1,3 +1,5 @@
+import { fileToHtml } from "./document-tools.js";
+
 const TEXT_MIME_PREFIXES = ["text/"];
 const TEXT_MIME_EXACT = new Set([
   "application/json",
@@ -57,7 +59,7 @@ export function resolveCompareMode(leftEntry, rightEntry) {
     return "image";
   }
 
-  return "unsupported";
+  return "text-fallback";
 }
 
 function decodeText(bytes) {
@@ -72,11 +74,62 @@ async function readEntryText(entry, maxBytes) {
   }
 
   if (file.size > maxBytes) {
-    throw new Error(`File \"${entry.name}\" is larger than ${(maxBytes / (1024 * 1024)).toFixed(1)} MB text compare limit.`);
+    const clipped = await file.slice(0, maxBytes).arrayBuffer();
+    return `${decodeText(clipped)}\n\n[... clipped at ${(maxBytes / (1024 * 1024)).toFixed(1)} MB for compare ...]`;
   }
 
   const bytes = await file.arrayBuffer();
   return decodeText(bytes);
+}
+
+function htmlToText(html = "") {
+  return `${html}`
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n\s+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function entryMetadataText(entry) {
+  const file = entry?.file;
+  return [
+    `Name: ${entry?.name || file?.name || "unknown"}`,
+    `Kind: ${entry?.kind || "unknown"}`,
+    `Type: ${entry?.type || file?.type || "unknown"}`,
+    `Size: ${file?.size ?? entry?.size ?? 0}`,
+    `LastModified: ${file?.lastModified ?? "unknown"}`,
+  ].join("\n");
+}
+
+async function readEntryComparableText(entry, maxBytes) {
+  if (isTextComparable(entry)) {
+    return {
+      text: await readEntryText(entry, maxBytes),
+      source: "text",
+    };
+  }
+
+  try {
+    const html = await fileToHtml(entry);
+    const normalized = htmlToText(html);
+    if (normalized) {
+      return {
+        text: normalized,
+        source: "normalized",
+      };
+    }
+  } catch {
+    // Fall through to metadata fallback.
+  }
+
+  return {
+    text: entryMetadataText(entry),
+    source: "metadata",
+  };
 }
 
 function splitLines(text) {
@@ -201,24 +254,20 @@ export async function compareTextEntries(leftEntry, rightEntry, options = {}) {
   const maxBytes = Number(options.maxBytes) || 2 * 1024 * 1024;
   const maxLines = Number(options.maxLines) || 1200;
 
-  if (!isTextComparable(leftEntry) || !isTextComparable(rightEntry)) {
-    throw new Error("Selected files are not text-comparable.");
-  }
-
-  const [leftText, rightText] = await Promise.all([
-    readEntryText(leftEntry, maxBytes),
-    readEntryText(rightEntry, maxBytes),
+  const [leftComparable, rightComparable] = await Promise.all([
+    readEntryComparableText(leftEntry, maxBytes),
+    readEntryComparableText(rightEntry, maxBytes),
   ]);
 
-  const leftLines = splitLines(leftText);
-  const rightLines = splitLines(rightText);
+  const leftLines = splitLines(leftComparable.text);
+  const rightLines = splitLines(rightComparable.text);
+  const leftTruncated = leftLines.length > maxLines;
+  const rightTruncated = rightLines.length > maxLines;
+  const limitedLeft = leftTruncated ? leftLines.slice(0, maxLines) : leftLines;
+  const limitedRight = rightTruncated ? rightLines.slice(0, maxLines) : rightLines;
 
-  if (leftLines.length > maxLines || rightLines.length > maxLines) {
-    throw new Error(`Text compare supports up to ${maxLines.toLocaleString()} lines per file in baseline mode.`);
-  }
-
-  const table = buildLcsTable(leftLines, rightLines);
-  const ops = buildOps(leftLines, rightLines, table);
+  const table = buildLcsTable(limitedLeft, limitedRight);
+  const ops = buildOps(limitedLeft, limitedRight, table);
   const rows = pairOps(ops);
 
   const counts = rows.reduce((acc, row) => {
@@ -231,8 +280,50 @@ export async function compareTextEntries(leftEntry, rightEntry, options = {}) {
 
   return {
     mode: "text",
+    compareSource: {
+      left: leftComparable.source,
+      right: rightComparable.source,
+      truncated: leftTruncated || rightTruncated,
+      maxLines,
+    },
     leftName: leftEntry.name,
     rightName: rightEntry.name,
+    rows,
+    counts,
+  };
+}
+
+export function compareTextContent(leftText, rightText, options = {}) {
+  const maxLines = Number(options.maxLines) || 1200;
+  const leftLines = splitLines(leftText || "");
+  const rightLines = splitLines(rightText || "");
+  const leftTruncated = leftLines.length > maxLines;
+  const rightTruncated = rightLines.length > maxLines;
+  const limitedLeft = leftTruncated ? leftLines.slice(0, maxLines) : leftLines;
+  const limitedRight = rightTruncated ? rightLines.slice(0, maxLines) : rightLines;
+
+  const table = buildLcsTable(limitedLeft, limitedRight);
+  const ops = buildOps(limitedLeft, limitedRight, table);
+  const rows = pairOps(ops);
+
+  const counts = rows.reduce((acc, row) => {
+    if (row.type === "equal") acc.equal += 1;
+    else if (row.type === "replace") acc.replace += 1;
+    else if (row.type === "add") acc.add += 1;
+    else if (row.type === "remove") acc.remove += 1;
+    return acc;
+  }, { equal: 0, replace: 0, add: 0, remove: 0 });
+
+  return {
+    mode: "text",
+    compareSource: {
+      left: "input",
+      right: "input",
+      truncated: leftTruncated || rightTruncated,
+      maxLines,
+    },
+    leftName: "Left text",
+    rightName: "Right text",
     rows,
     counts,
   };

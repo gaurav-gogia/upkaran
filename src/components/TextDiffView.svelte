@@ -20,6 +20,15 @@
       </small>
     </header>
 
+    {#if diff.compareSource}
+      <p class="source-note">
+        Source: left {diff.compareSource.left}, right {diff.compareSource.right}
+        {#if diff.compareSource.truncated}
+          · clipped to {diff.compareSource.maxLines} lines per side
+        {/if}
+      </p>
+    {/if}
+
     <div class="diff-wrap">
       <table class="diff-table" aria-label="Text compare result">
         <thead>
@@ -74,6 +83,12 @@
     margin: 0;
     color: var(--md-sys-color-on-surface-variant);
     font-size: 0.86rem;
+  }
+
+  .source-note {
+    margin: 0 0 0.5rem;
+    font-size: 0.76rem;
+    color: var(--md-sys-color-on-surface-variant);
   }
 
   .diff-wrap {

@@ -117,29 +117,38 @@
 <section class="panel tool">
   <header class="tool-header">
     <div>
-      <h3>Content Tools</h3>
-      <p>Convert documents, data files, and source code to PDF.</p>
+      <h3>Content Command Center</h3>
+      <p>Convert documents, datasets, and source files to PDF with local rendering and review before export.</p>
     </div>
   </header>
 
+  <div class="tool-meta" aria-label="Content workspace summary">
+    <span class="meta-chip">Files loaded <strong>{files.length}</strong></span>
+    <span class="meta-chip">Primary file <strong>{primaryFile?.name ?? "No file selected"}</strong></span>
+    <span class="meta-chip">Status <strong>{files.every((f) => !!getUnsupportedMsg(f.name)) && files.length > 0 ? "Needs supported format" : "Ready"}</strong></span>
+  </div>
+
   <!-- File list summary -->
   {#if files.length > 0}
-    <ul class="file-list">
-      {#each files as f (f.id)}
-        <li class="file-item">
-          <span class="material-symbols-outlined file-icon">{KIND_ICON[f.kind] ?? "insert_drive_file"}</span>
-          <div class="file-info">
-            <strong class="file-name" title={f.name}>{f.name}</strong>
-            <small>{kindLabel(f.kind)} · {formatBytes(f.size)}</small>
-          </div>
-          {#if getUnsupportedMsg(f.name)}
-            <span class="badge-warn">Not supported</span>
-          {:else}
-            <span class="badge-ok">Ready</span>
-          {/if}
-        </li>
-      {/each}
-    </ul>
+    <details class="compact-section" open={files.length <= 3}>
+      <summary>Input files ({files.length})</summary>
+      <ul class="file-list">
+        {#each files as f (f.id)}
+          <li class="file-item">
+            <span class="material-symbols-outlined file-icon">{KIND_ICON[f.kind] ?? "insert_drive_file"}</span>
+            <div class="file-info">
+              <strong class="file-name" title={f.name}>{f.name}</strong>
+              <small>{kindLabel(f.kind)} · {formatBytes(f.size)}</small>
+            </div>
+            {#if getUnsupportedMsg(f.name)}
+              <span class="badge-warn">Not supported</span>
+            {:else}
+              <span class="badge-ok">Ready</span>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </details>
   {:else}
     <p class="empty-hint">No content files selected.</p>
   {/if}
@@ -178,7 +187,7 @@
   {/if}
 
   <!-- Actions -->
-  <div class="actions">
+  <div class="actions ops-primary">
     <button
       on:click={convertAll}
       disabled={busy || converting || !files.length || files.every((f) => !!getUnsupportedMsg(f.name))}
@@ -187,35 +196,92 @@
     </button>
   </div>
 
-  <p class="tool-note">
-    Supported: TXT, RTF, MD, DOCX, PPTX, XLSX, CSV, TSV, JSON, YAML, XML, and common source code files.
-    Conversion runs entirely in your browser.
-  </p>
+  <details class="compact-section">
+    <summary>Supported formats</summary>
+    <p class="tool-note">
+      Supported: TXT, RTF, MD, DOCX, PPTX, XLSX, CSV, TSV, JSON, YAML, XML, and common source code files.
+      Conversion runs entirely in your browser.
+    </p>
+  </details>
 </section>
 
 <style>
   .tool {
-    padding: 1rem;
+    padding: 1.2rem;
+    display: grid;
+    gap: 0.8rem;
   }
 
   .tool-header {
-    margin-bottom: 0.75rem;
+    margin-bottom: 0;
   }
 
   h3 {
-    margin: 0 0 0.25rem;
+    margin: 0 0 0.32rem;
+    letter-spacing: 0.01em;
+    font-size: clamp(1.08rem, 1.5vw, 1.35rem);
   }
 
   p {
     margin: 0;
     color: var(--md-sys-color-on-surface-variant);
-    font-size: 0.88rem;
+    font-size: 0.9rem;
+    line-height: 1.45;
+  }
+
+  .tool-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+
+  .meta-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 999px;
+    padding: 0.28rem 0.62rem;
+    font-size: 0.76rem;
+    color: var(--md-sys-color-on-surface-variant);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 82%, var(--md-sys-color-primary) 18%);
+  }
+
+  .meta-chip strong {
+    color: var(--md-sys-color-on-surface);
+    font-weight: 700;
+    max-width: 18rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .compact-section {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: var(--app-radius-sm, 12px);
+    background: var(--md-sys-color-surface-container-low);
+    padding: 0.5rem 0.65rem;
+  }
+
+  .compact-section > summary {
+    list-style: none;
+    cursor: pointer;
+    font-size: 0.77rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--md-sys-color-on-surface-variant);
+    padding: 0.1rem 0;
+  }
+
+  .compact-section > summary::-webkit-details-marker {
+    display: none;
   }
 
   /* File list */
   .file-list {
     list-style: none;
-    margin: 0 0 0.9rem;
+    margin: 0.55rem 0 0;
     padding: 0;
     display: grid;
     gap: 0.4rem;
@@ -227,7 +293,7 @@
     align-items: center;
     gap: 0.5rem;
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 10px;
+    border-radius: var(--app-radius-sm, 12px);
     padding: 0.5rem 0.7rem;
     background: var(--md-sys-color-surface-container-low);
   }
@@ -256,9 +322,9 @@
 
   .badge-ok {
     font-size: 0.72rem;
-    background: #edfaf1;
-    color: #1a6b2f;
-    border: 1px solid #a3d9b5;
+    background: color-mix(in srgb, var(--app-state-success, #1a6b2f) 12%, var(--md-sys-color-surface));
+    color: var(--app-state-success, #1a6b2f);
+    border: 1px solid color-mix(in srgb, var(--app-state-success, #1a6b2f) 32%, var(--md-sys-color-outline-variant));
     border-radius: 999px;
     padding: 0.15rem 0.55rem;
     white-space: nowrap;
@@ -266,9 +332,9 @@
 
   .badge-warn {
     font-size: 0.72rem;
-    background: color-mix(in srgb, var(--md-sys-color-error) 8%, white);
+    background: color-mix(in srgb, var(--md-sys-color-error) 10%, var(--md-sys-color-surface));
     color: var(--md-sys-color-error);
-    border: 1px solid color-mix(in srgb, var(--md-sys-color-error) 30%, white);
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-error) 30%, var(--md-sys-color-outline-variant));
     border-radius: 999px;
     padding: 0.15rem 0.55rem;
     white-space: nowrap;
@@ -277,10 +343,11 @@
   /* Preview */
   .preview-wrap {
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 10px;
+    border-radius: var(--app-radius-md, 18px);
     overflow: hidden;
-    margin-bottom: 0.9rem;
-    background: white;
+    margin-bottom: 0.2rem;
+    background: var(--md-sys-color-surface);
+    box-shadow: var(--elevation-1);
   }
 
   .preview-label {
@@ -310,7 +377,7 @@
     height: 360px;
     border: none;
     display: block;
-    background: white;
+    background: var(--md-sys-color-surface);
   }
 
   .preview-empty {
@@ -328,10 +395,10 @@
     align-items: flex-start;
     gap: 0.5rem;
     padding: 0.7rem 0.85rem;
-    background: color-mix(in srgb, var(--md-sys-color-error) 6%, white);
-    border: 1px solid color-mix(in srgb, var(--md-sys-color-error) 20%, white);
-    border-radius: 10px;
-    margin-bottom: 0.9rem;
+    background: color-mix(in srgb, var(--md-sys-color-error) 10%, var(--md-sys-color-surface));
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-error) 26%, var(--md-sys-color-outline-variant));
+    border-radius: var(--app-radius-sm, 12px);
+    margin-bottom: 0.2rem;
     color: var(--md-sys-color-error);
     font-size: 0.85rem;
   }
@@ -349,11 +416,11 @@
 
   /* Error */
   .tool-error {
-    margin: 0 0 0.75rem;
+    margin: 0;
     padding: 0.55rem 0.75rem;
-    background: color-mix(in srgb, var(--md-sys-color-error) 8%, white);
-    border: 1px solid color-mix(in srgb, var(--md-sys-color-error) 25%, white);
-    border-radius: 8px;
+    background: color-mix(in srgb, var(--md-sys-color-error) 12%, var(--md-sys-color-surface));
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-error) 30%, var(--md-sys-color-outline-variant));
+    border-radius: var(--app-radius-sm, 12px);
     color: var(--md-sys-color-error);
     font-size: 0.83rem;
   }
@@ -363,12 +430,19 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.6rem;
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.2rem;
+  }
+
+  .ops-primary {
+    padding: 0.25rem;
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 20%, var(--md-sys-color-outline-variant));
+    border-radius: var(--app-radius-sm, 12px);
+    background: color-mix(in srgb, var(--md-sys-color-primary) 8%, var(--md-sys-color-surface));
   }
 
   .tool-note {
     font-size: 0.75rem;
     color: var(--md-sys-color-on-surface-variant);
-    margin-top: 0.4rem !important;
+    margin-top: 0.45rem !important;
   }
 </style>

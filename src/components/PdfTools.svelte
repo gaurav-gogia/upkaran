@@ -1031,8 +1031,20 @@
 </script>
 
 <section class="panel tool">
-  <h3>PDF Tooling</h3>
-  <p>Split, merge, compress, or render pages to images directly in browser memory.</p>
+  <h3>PDF Command Center</h3>
+  <p>Operate on sensitive documents locally with precise controls for structure, security, conversion, and review.</p>
+
+  <div class="tool-meta" aria-label="PDF workspace summary">
+    <span class="meta-chip">Files loaded <strong>{files.length}</strong></span>
+    <span class="meta-chip">Active pages <strong>{splitPageCount > 0 ? splitPageCount : "-"}</strong></span>
+    <span class="meta-chip">Active file <strong>{files[0]?.name ?? "No file selected"}</strong></span>
+  </div>
+
+  <div class="actions ops-primary" role="group" aria-label="Primary PDF actions">
+    <button type="button" on:click={() => run("split")} disabled={busy || files.length < 1}>Split PDF</button>
+    <button type="button" on:click={() => run("merge")} disabled={busy || files.length < 2}>Merge PDFs</button>
+    <button type="button" on:click={() => run("compress")} disabled={busy || files.length < 1}>Compress PDF</button>
+  </div>
 
   <section class="preview-wrap">
     <header>
@@ -1054,191 +1066,218 @@
     </div>
   </section>
 
-  <label for="pdf-img-format">Image output format</label>
-  <select id="pdf-img-format" bind:value={imageFormat}>
-    <option value="png">PNG</option>
-    <option value="jpeg">JPEG</option>
-    <option value="webp">WebP</option>
-  </select>
+  <details class="compact-section" open>
+    <summary>Quick exports</summary>
+    <section class="page-actions quick-convert compact-card">
+      <header>
+        <h4>Quick convert</h4>
+        <span>Fast export shortcuts</span>
+      </header>
+      <label for="pdf-img-format">Image output format</label>
+      <select id="pdf-img-format" bind:value={imageFormat}>
+        <option value="png">PNG</option>
+        <option value="jpeg">JPEG</option>
+        <option value="webp">WebP</option>
+      </select>
+      <div class="actions">
+        <button class="secondary" type="button" on:click={() => run("to-images")} disabled={busy || files.length < 1}>PDF to Images</button>
+        <button class="secondary" type="button" on:click={() => run("to-djvu")} disabled={busy || files.length < 1}>PDF to DjVu</button>
+      </div>
+    </section>
+  </details>
 
-  <section class="page-actions quick-convert">
-    <header>
-      <h4>Quick convert</h4>
-      <span>Fast export shortcuts</span>
-    </header>
-    <div class="actions">
-      <button class="secondary" type="button" on:click={() => run("to-images")} disabled={busy || files.length < 1}>PDF to Images</button>
-      <button class="secondary" type="button" on:click={() => run("to-djvu")} disabled={busy || files.length < 1}>PDF to DjVu</button>
-    </div>
-  </section>
+  <details class="compact-section">
+    <summary>Split configuration</summary>
+    <section class="page-actions compact-card">
+      <label for="pdf-split-mode">Split mode</label>
+      <select id="pdf-split-mode" bind:value={splitMode}>
+        <option value="per-page">One output per page (default)</option>
+        <option value="custom">Custom page groups</option>
+      </select>
 
-  <label for="pdf-split-mode">Split mode</label>
-  <select id="pdf-split-mode" bind:value={splitMode}>
-    <option value="per-page">One output per page (default)</option>
-    <option value="custom">Custom page groups</option>
-  </select>
-
-  {#if splitMode === "custom"}
-    <label for="pdf-split-selection">Page groups</label>
-    <input
-      id="pdf-split-selection"
-      type="text"
-      bind:value={splitSelection}
-      placeholder="Example: 1-2,3,4-5"
-      disabled={busy}
-    />
-    <div class="split-meta">
-      <small>
-        Use comma-separated pages or ranges. Example: 1-2,3,4-5 creates 3 output PDFs.
-        {#if splitPageCount > 0}
-          This file has {splitPageCount} pages.
-        {/if}
-      </small>
-      <button class="secondary" type="button" on:click={useAllPagesSelection} disabled={busy || splitPageCount < 1}>
-        Use all pages
-      </button>
-    </div>
-    {#if splitPreview}
-      <small class="split-preview">{splitPreview}</small>
-    {/if}
-    {#if splitPreviewError}
-      <small class="split-error">{splitPreviewError}</small>
-    {/if}
-  {/if}
-
-  <section class="merge-wrap">
-    <header>
-      <h4>Merge order</h4>
-      <span>{mergeQueue.length} PDF(s)</span>
-    </header>
-    <ul>
-      {#each mergeQueue as file, index (file.id)}
-        <li
-          draggable={!busy}
-          on:dragstart={() => (draggingMergeId = file.id)}
-          on:dragend={() => (draggingMergeId = "")}
-          on:dragover|preventDefault
-          on:drop|preventDefault={() => reorderMergeQueue(file.id)}
-        >
-          <button class="drag-handle" type="button" aria-label={`Reorder ${file.name}`} disabled={busy}>drag_indicator</button>
-          <div>
-            <strong>{index + 1}. {file.name}</strong>
-            <small>{formatBytes(file.size)}</small>
-          </div>
-        </li>
-      {/each}
-    </ul>
-  </section>
-
-  <section class="page-actions">
-    <header>
-      <h4>Page organization</h4>
-      <span>Drag pages to reorder, then apply</span>
-    </header>
-    <div class="order-quick-actions">
-      <button class="secondary" type="button" on:click={resetPageOrder} disabled={busy || splitPageCount < 1}>Reset</button>
-      <button class="secondary" type="button" on:click={reversePageOrder} disabled={busy || splitPageCount < 2}>Reverse</button>
-      <button class="secondary" type="button" on:click={sortPageOrderAsc} disabled={busy || splitPageCount < 2}>Sort Asc</button>
-      <button class="secondary" type="button" on:click={sortPageOrderDesc} disabled={busy || splitPageCount < 2}>Sort Desc</button>
-    </div>
-    <ul class="page-order-list">
-      {#each pageOrder as pageNum (pageNum)}
-        <li
-          draggable={!busy}
-          on:dragstart={() => (draggingPageOrder = pageNum)}
-          on:dragend={() => (draggingPageOrder = null)}
-          on:dragover|preventDefault
-          on:drop|preventDefault={() => reorderPageOrder(pageNum)}
-        >
-          <div class="page-thumb-wrap">
-            {#if pageThumbnails[pageNum]}
-              <img class="page-thumb" src={pageThumbnails[pageNum]} alt={`Thumbnail for page ${pageNum}`} />
-            {:else}
-              <div class="page-thumb-placeholder"><span class="material-symbols-outlined">article</span></div>
-            {/if}
-          </div>
-          <div class="page-thumb-label">
-            <button class="drag-handle" type="button" aria-label={`Reorder page ${pageNum}`} disabled={busy}>drag_indicator</button>
-            <span>Page {pageNum}</span>
-          </div>
-        </li>
-      {/each}
-    </ul>
-    <div class="actions">
-      <button class="secondary" type="button" on:click={() => run("reorder-pages")} disabled={busy || splitPageCount < 2}>Apply Page Order</button>
-    </div>
-  </section>
-
-  <section class="page-actions">
-    <header>
-      <h4>Page actions</h4>
-      <span>Use ranges like 1-2,4,7-9</span>
-    </header>
-    <label for="pdf-page-action-selection">Page selection</label>
-    <input
-      id="pdf-page-action-selection"
-      type="text"
-      bind:value={pageActionSelection}
-      placeholder="Example: 1-2,4,7-9"
-      disabled={busy}
-    />
-    <label for="pdf-rotate-angle">Rotate angle</label>
-    <select id="pdf-rotate-angle" bind:value={rotateAngle}>
-      <option value="90">90° clockwise</option>
-      <option value="180">180°</option>
-      <option value="270">270° clockwise</option>
-    </select>
-    <div class="actions">
-      <button class="secondary" on:click={() => run("extract-pages")} disabled={busy || files.length < 1}>Extract Pages</button>
-      <button class="secondary" on:click={() => run("remove-pages")} disabled={busy || files.length < 1}>Remove Pages</button>
-      <button class="secondary" on:click={() => run("rotate-pages")} disabled={busy || files.length < 1}>Rotate Pages</button>
-    </div>
-    <small>For rotate: leave selection empty to rotate all pages.</small>
-  </section>
-
-  <section class="page-actions">
-    <header>
-      <h4>Page numbering</h4>
-      <span>Add page numbers to selected pages</span>
-    </header>
-    <label for="pdf-number-selection">Page selection (optional)</label>
-    <input
-      id="pdf-number-selection"
-      type="text"
-      bind:value={pageNumberSelection}
-      placeholder="Empty = all pages"
-      disabled={busy}
-    />
-    <div class="number-grid">
-      <div>
-        <label for="pdf-number-start">Start number</label>
+      {#if splitMode === "custom"}
+        <label for="pdf-split-selection">Page groups</label>
         <input
-          id="pdf-number-start"
-          type="number"
-          min="1"
-          step="1"
-          bind:value={pageNumberStart}
+          id="pdf-split-selection"
+          type="text"
+          bind:value={splitSelection}
+          placeholder="Example: 1-2,3,4-5"
           disabled={busy}
         />
-      </div>
-      <div>
-        <label for="pdf-number-position">Position</label>
-        <select id="pdf-number-position" bind:value={pageNumberPosition}>
-          <option value="bottom-center">Bottom center</option>
-          <option value="bottom-left">Bottom left</option>
-          <option value="bottom-right">Bottom right</option>
-          <option value="top-left">Top left</option>
-          <option value="top-right">Top right</option>
-          <option value="middle-center">Middle center</option>
-        </select>
-      </div>
-    </div>
-    <div class="actions">
-      <button class="secondary" on:click={() => run("number-pages")} disabled={busy || files.length < 1}>Add Page Numbers</button>
-    </div>
-  </section>
+        <div class="split-meta">
+          <small>
+            Use comma-separated pages or ranges. Example: 1-2,3,4-5 creates 3 output PDFs.
+            {#if splitPageCount > 0}
+              This file has {splitPageCount} pages.
+            {/if}
+          </small>
+          <button class="secondary" type="button" on:click={useAllPagesSelection} disabled={busy || splitPageCount < 1}>
+            Use all pages
+          </button>
+        </div>
+        {#if splitPreview}
+          <small class="split-preview">{splitPreview}</small>
+        {/if}
+        {#if splitPreviewError}
+          <small class="split-error">{splitPreviewError}</small>
+        {/if}
+      {/if}
+    </section>
+  </details>
 
-  <section class="page-actions watermark-section">
+  <details class="advanced-tools">
+    <summary>
+      <span class="material-symbols-outlined" aria-hidden="true">tune</span>
+      Advanced operations
+    </summary>
+
+  <details class="advanced-subsection">
+    <summary>Merge Queue</summary>
+    <section class="merge-wrap">
+      <header>
+        <h4>Merge order</h4>
+        <span>{mergeQueue.length} PDF(s)</span>
+      </header>
+      <ul>
+        {#each mergeQueue as file, index (file.id)}
+          <li
+            draggable={!busy}
+            on:dragstart={() => (draggingMergeId = file.id)}
+            on:dragend={() => (draggingMergeId = "")}
+            on:dragover|preventDefault
+            on:drop|preventDefault={() => reorderMergeQueue(file.id)}
+          >
+            <button class="drag-handle" type="button" aria-label={`Reorder ${file.name}`} disabled={busy}>drag_indicator</button>
+            <div>
+              <strong>{index + 1}. {file.name}</strong>
+              <small>{formatBytes(file.size)}</small>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  </details>
+
+  <details class="advanced-subsection">
+    <summary>Page Order</summary>
+    <section class="page-actions">
+      <header>
+        <h4>Page organization</h4>
+        <span>Drag pages to reorder, then apply</span>
+      </header>
+      <div class="order-quick-actions">
+        <button class="secondary" type="button" on:click={resetPageOrder} disabled={busy || splitPageCount < 1}>Reset</button>
+        <button class="secondary" type="button" on:click={reversePageOrder} disabled={busy || splitPageCount < 2}>Reverse</button>
+        <button class="secondary" type="button" on:click={sortPageOrderAsc} disabled={busy || splitPageCount < 2}>Sort Asc</button>
+        <button class="secondary" type="button" on:click={sortPageOrderDesc} disabled={busy || splitPageCount < 2}>Sort Desc</button>
+      </div>
+      <ul class="page-order-list">
+        {#each pageOrder as pageNum (pageNum)}
+          <li
+            draggable={!busy}
+            on:dragstart={() => (draggingPageOrder = pageNum)}
+            on:dragend={() => (draggingPageOrder = null)}
+            on:dragover|preventDefault
+            on:drop|preventDefault={() => reorderPageOrder(pageNum)}
+          >
+            <div class="page-thumb-wrap">
+              {#if pageThumbnails[pageNum]}
+                <img class="page-thumb" src={pageThumbnails[pageNum]} alt={`Thumbnail for page ${pageNum}`} />
+              {:else}
+                <div class="page-thumb-placeholder"><span class="material-symbols-outlined">article</span></div>
+              {/if}
+            </div>
+            <div class="page-thumb-label">
+              <button class="drag-handle" type="button" aria-label={`Reorder page ${pageNum}`} disabled={busy}>drag_indicator</button>
+              <span>Page {pageNum}</span>
+            </div>
+          </li>
+        {/each}
+      </ul>
+      <div class="actions">
+        <button class="secondary" type="button" on:click={() => run("reorder-pages")} disabled={busy || splitPageCount < 2}>Apply Page Order</button>
+      </div>
+    </section>
+  </details>
+
+  <details class="advanced-subsection">
+    <summary>Page Actions</summary>
+    <section class="page-actions">
+      <header>
+        <h4>Page actions</h4>
+        <span>Use ranges like 1-2,4,7-9</span>
+      </header>
+      <label for="pdf-page-action-selection">Page selection</label>
+      <input
+        id="pdf-page-action-selection"
+        type="text"
+        bind:value={pageActionSelection}
+        placeholder="Example: 1-2,4,7-9"
+        disabled={busy}
+      />
+      <label for="pdf-rotate-angle">Rotate angle</label>
+      <select id="pdf-rotate-angle" bind:value={rotateAngle}>
+        <option value="90">90° clockwise</option>
+        <option value="180">180°</option>
+        <option value="270">270° clockwise</option>
+      </select>
+      <div class="actions">
+        <button class="secondary" on:click={() => run("extract-pages")} disabled={busy || files.length < 1}>Extract Pages</button>
+        <button class="secondary" on:click={() => run("remove-pages")} disabled={busy || files.length < 1}>Remove Pages</button>
+        <button class="secondary" on:click={() => run("rotate-pages")} disabled={busy || files.length < 1}>Rotate Pages</button>
+      </div>
+      <small>For rotate: leave selection empty to rotate all pages.</small>
+    </section>
+  </details>
+
+  <details class="advanced-subsection">
+    <summary>Page Numbering</summary>
+    <section class="page-actions">
+      <header>
+        <h4>Page numbering</h4>
+        <span>Add page numbers to selected pages</span>
+      </header>
+      <label for="pdf-number-selection">Page selection (optional)</label>
+      <input
+        id="pdf-number-selection"
+        type="text"
+        bind:value={pageNumberSelection}
+        placeholder="Empty = all pages"
+        disabled={busy}
+      />
+      <div class="number-grid">
+        <div>
+          <label for="pdf-number-start">Start number</label>
+          <input
+            id="pdf-number-start"
+            type="number"
+            min="1"
+            step="1"
+            bind:value={pageNumberStart}
+            disabled={busy}
+          />
+        </div>
+        <div>
+          <label for="pdf-number-position">Position</label>
+          <select id="pdf-number-position" bind:value={pageNumberPosition}>
+            <option value="bottom-center">Bottom center</option>
+            <option value="bottom-left">Bottom left</option>
+            <option value="bottom-right">Bottom right</option>
+            <option value="top-left">Top left</option>
+            <option value="top-right">Top right</option>
+            <option value="middle-center">Middle center</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="secondary" on:click={() => run("number-pages")} disabled={busy || files.length < 1}>Add Page Numbers</button>
+      </div>
+    </section>
+  </details>
+
+  <details class="advanced-subsection">
+    <summary>Watermark Studio</summary>
+    <section class="page-actions watermark-section">
     <header>
       <h4>Image watermark</h4>
       <span>Drag and set exact position per page</span>
@@ -1432,15 +1471,11 @@
         <button class="secondary" type="button" on:click={() => run("watermark-image")} disabled={busy || files.length < 1 || !watermarkImageFile || !!watermarkSelectionError}>Apply Image Watermark</button>
       </div>
     {/if}
-  </section>
+    </section>
+  </details>
 
-  <div class="actions">
-    <button on:click={() => run("split")} disabled={busy || files.length < 1}>Split PDF</button>
-    <button on:click={() => run("merge")} disabled={busy || files.length < 2}>Merge PDFs</button>
-    <button on:click={() => run("compress")} disabled={busy || files.length < 1}>Compress PDF</button>
-    <button on:click={() => run("to-images")} disabled={busy || files.length < 1}>PDF to Images</button>
-    <button on:click={() => run("to-djvu")} disabled={busy || files.length < 1}>PDF to DjVu</button>
-  </div>
+  <details class="advanced-subsection">
+    <summary>Security</summary>
 
   <!-- PDF Unlock section -->
   <section class="page-actions unlock-section">
@@ -1521,44 +1556,185 @@
       </button>
     </div>
   </section>
+  </details>
+  </details>
 </section>
 
 <style>
   .tool {
-    padding: 1rem;
+    padding: 1.2rem;
+    display: grid;
+    gap: 0.9rem;
   }
 
   h3 {
-    margin: 0 0 0.4rem;
+    margin: 0;
+    letter-spacing: 0.01em;
+    font-size: clamp(1.08rem, 1.5vw, 1.35rem);
   }
 
-  p {
-    margin: 0 0 1rem;
+  .tool > p {
+    margin: 0;
     color: var(--md-sys-color-on-surface-variant);
+    font-size: 0.92rem;
+    line-height: 1.45;
+  }
+
+  .tool-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+
+  .meta-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 999px;
+    padding: 0.28rem 0.62rem;
+    font-size: 0.76rem;
+    color: var(--md-sys-color-on-surface-variant);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 82%, var(--md-sys-color-primary) 18%);
+  }
+
+  .meta-chip strong {
+    color: var(--md-sys-color-on-surface);
+    font-weight: 700;
+    max-width: 20rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ops-primary {
+    padding: 0.25rem;
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 20%, var(--md-sys-color-outline-variant));
+    border-radius: var(--app-radius-sm, 12px);
+    background: color-mix(in srgb, var(--md-sys-color-primary) 8%, var(--md-sys-color-surface));
+  }
+
+  .compact-section {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: var(--app-radius-sm, 12px);
+    background: var(--md-sys-color-surface-container-low);
+    padding: 0.45rem 0.55rem;
+  }
+
+  .compact-section + .compact-section {
+    margin-top: -0.25rem;
+  }
+
+  .compact-section > summary {
+    list-style: none;
+    cursor: pointer;
+    font-size: 0.77rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--md-sys-color-on-surface-variant);
+    padding: 0.1rem 0;
+  }
+
+  .compact-section > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .compact-section > :global(section) {
+    margin-top: 0.45rem;
+  }
+
+  .compact-card {
+    margin: 0;
+    box-shadow: none;
+  }
+
+  .advanced-tools {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: var(--app-radius-md, 18px);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 90%, var(--md-sys-color-primary) 10%);
+    padding: 0.6rem;
+  }
+
+  .advanced-tools > summary {
+    list-style: none;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--md-sys-color-on-surface-variant);
+    padding: 0.2rem 0.1rem;
+  }
+
+  .advanced-tools > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .advanced-tools > summary .material-symbols-outlined {
+    font-size: 0.95rem;
+  }
+
+  .advanced-tools[open] > summary {
+    margin-bottom: 0.45rem;
+  }
+
+  .advanced-subsection {
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-outline) 55%, transparent);
+    border-radius: var(--app-radius-sm, 12px);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 95%, var(--md-sys-color-primary) 5%);
+    padding: 0.5rem;
+    margin-bottom: 0.55rem;
+  }
+
+  .advanced-subsection > summary {
+    list-style: none;
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--md-sys-color-on-surface-variant);
+    padding: 0.15rem 0.1rem;
+  }
+
+  .advanced-subsection > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .advanced-subsection > :global(section),
+  .advanced-subsection > :global(div) {
+    margin-top: 0.45rem;
   }
 
   label {
     display: block;
     margin-bottom: 0.3rem;
-    font-size: 0.85rem;
+    font-size: 0.79rem;
+    color: var(--md-sys-color-on-surface-variant);
+    font-weight: 600;
+    letter-spacing: 0.02em;
   }
 
   select {
     width: 100%;
     margin-bottom: 0.9rem;
-    border-radius: 10px;
+    border-radius: var(--app-radius-sm, 12px);
     border: 1px solid var(--md-sys-color-outline);
     padding: 0.45rem 0.55rem;
-    background: #fff;
+    background: var(--md-sys-color-surface);
   }
 
   input {
     width: 100%;
     margin-bottom: 0.35rem;
-    border-radius: 10px;
+    border-radius: var(--app-radius-sm, 12px);
     border: 1px solid var(--md-sys-color-outline);
     padding: 0.45rem 0.55rem;
-    background: #fff;
+    background: var(--md-sys-color-surface);
     box-sizing: border-box;
   }
 
@@ -1600,9 +1776,10 @@
   .preview-wrap {
     margin: 0.2rem 0 0.9rem;
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 10px;
-    padding: 0.7rem;
+    border-radius: var(--app-radius-md, 18px);
+    padding: 0.78rem;
     background: var(--md-sys-color-surface-container-low);
+    box-shadow: var(--elevation-1);
   }
 
   .preview-wrap header {
@@ -1631,8 +1808,8 @@
     object-fit: contain;
     display: block;
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 8px;
-    background: #fff;
+    border-radius: var(--app-radius-sm, 12px);
+    background: var(--md-sys-color-surface);
   }
 
   .preview-actions {
@@ -1654,9 +1831,14 @@
   .page-actions {
     margin: 0.25rem 0 1rem;
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 10px;
-    padding: 0.75rem;
+    border-radius: var(--app-radius-md, 18px);
+    padding: 0.82rem;
     background: var(--md-sys-color-surface-container-low);
+    box-shadow: var(--elevation-1);
+  }
+
+  .quick-convert {
+    margin-bottom: 0;
   }
 
   .page-actions header {
@@ -1676,7 +1858,9 @@
 
   .page-actions span {
     color: var(--md-sys-color-on-surface-variant);
-    font-size: 0.78rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
   }
 
   .page-actions small {
@@ -1701,7 +1885,7 @@
 
   .page-order-list li {
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 10px;
+    border-radius: var(--app-radius-sm, 12px);
     padding: 0;
     background: var(--md-sys-color-surface);
     display: flex;
@@ -1776,9 +1960,9 @@
     width: 100%;
     margin-bottom: 0.75rem;
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 8px;
+    border-radius: var(--app-radius-sm, 12px);
     overflow: hidden;
-    background: #fff;
+    background: var(--md-sys-color-surface);
     touch-action: manipulation;
     cursor: crosshair;
   }
@@ -1989,7 +2173,7 @@
 
   .merge-wrap li {
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 10px;
+    border-radius: var(--app-radius-sm, 12px);
     padding: 0.45rem 0.55rem;
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -2094,18 +2278,18 @@
     margin: 0 0 0.6rem;
     font-size: 0.82rem;
     padding: 0.5rem 0.75rem;
-    border-radius: 8px;
+    border-radius: var(--app-radius-sm, 12px);
   }
 
   .unlock-msg--error {
     color: var(--md-sys-color-error);
-    background: color-mix(in srgb, var(--md-sys-color-error) 8%, white);
-    border: 1px solid color-mix(in srgb, var(--md-sys-color-error) 25%, white);
+    background: color-mix(in srgb, var(--md-sys-color-error) 10%, var(--md-sys-color-surface));
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-error) 30%, var(--md-sys-color-outline-variant));
   }
 
   .unlock-msg--success {
-    color: #1a6b2f;
-    background: #edfaf1;
-    border: 1px solid #a3d9b5;
+    color: var(--app-state-success, #1a6b2f);
+    background: color-mix(in srgb, var(--app-state-success, #1a6b2f) 12%, var(--md-sys-color-surface));
+    border: 1px solid color-mix(in srgb, var(--app-state-success, #1a6b2f) 34%, var(--md-sys-color-outline-variant));
   }
 </style>
