@@ -2,23 +2,42 @@
   import { createEventDispatcher, onDestroy } from "svelte";
   import {
     mergePdfs,
-    splitPdf,
     extractPdfPages,
     removePdfPages,
     rotatePdfPages,
+    cropPdfPages,
+    addPdfHeaderFooter,
     addPdfPageNumbers,
     reorderPdfPages,
     compressPdf,
     pdfToImages,
     renderPdfPreviewPage,
     addPdfImageWatermark,
+    addPdfTextWatermark,
+    applyPdfMetadata,
     getPdfPageCount,
     summarizeCustomSplitSelection,
     buildAllPagesSelection,
     unlockPdf,
-    lockPdf
+    lockPdf,
+    repairPdf,
+    ocrPdfPilot,
+    exportPdfA
   } from "../js/pdf-tools.js";
   import { pdfToDjvu } from "../js/djvu-tools.js";
+  import {
+    resolveProtectPresetConfig,
+    validateUnlockPresetStrategy
+  } from "../js/pdf-protect-presets.js";
+  import {
+    classifyUnlockError,
+    lockPresetLabel,
+    lockPresetMinLength,
+    lockPresetRequirementsText,
+    validateLockConfirmation,
+    validateLockPassword
+  } from "../js/pdf-security.js";
+  import { applyOutputNamingTemplate } from "../js/output-naming.js";
   import { formatBytes } from "../js/detect.js";
 
   export let files = [];
@@ -26,8 +45,30 @@
   let imageFormat = "png";
   let splitMode = "per-page";
   let splitSelection = "1-2,3,4-5";
+  let splitMaxChunkMb = "2";
+  let outputNameTemplate = "{name}-{op}-{index}.{ext}";
+  let metadataTitle = "";
+  let metadataAuthor = "";
+  let metadataSubject = "";
+  let metadataKeywords = "";
+  let metadataStatus = "";
+  let metadataMessage = "";
+  let headerFooterPreset = "standard";
+  let headerFooterSelection = "";
+  let headerFooterText = "";
+  let footerText = "";
+  let unlockPresetStrategy = "auto";
+  let protectPreset = "balanced";
+  let protectAllowPrint = false;
+  let protectAllowCopy = false;
+  let protectAllowEdit = false;
   let pageActionSelection = "";
   let rotateAngle = "90";
+  let cropSelection = "";
+  let cropTop = "0";
+  let cropRight = "0";
+  let cropBottom = "0";
+  let cropLeft = "0";
   let pageNumberSelection = "";
   let pageNumberStart = "1";
   let pageNumberPosition = "bottom-center";
@@ -43,6 +84,11 @@
   let previewUrl = "";
   let previewLoading = false;
   let previewError = "";
+  let previewRenderMode = "image";
+  let previewFallbackNote = "";
+  let previewBlobUrl = "";
+  let previewBlobFileKey = "";
+  let previewWrapRef = null;
   let mergeQueue = [];
   let draggingMergeId = "";
   let pageOrder = [];
@@ -76,6 +122,15 @@
   let livePreviewBaseImg = null;
   let livePreviewWatermarkSrc = "";
   let livePreviewWatermarkImg = null;
+  let textWatermarkValue = "CONFIDENTIAL";
+  let textWatermarkSelection = "";
+  let textWatermarkSelectionError = "";
+  let textWatermarkTargetPages = [];
+  let textWatermarkSize = "40";
+  let textWatermarkOpacity = "25";
+  let textWatermarkRotation = "-28";
+  let textWatermarkPosition = "center";
+  let textWatermarkColor = "#6b7280";
 
   const dispatch = createEventDispatcher();
 
@@ -92,6 +147,17 @@
   let lockError = "";
   let lockSuccess = "";
   let locking = false;
+  let lockPreset = "balanced";
+  let showLockPassword = false;
+  let repairStatus = "";
+  let repairMessage = "";
+  let ocrLanguage = "eng";
+  let ocrStrategy = "searchable-overlay";
+  let ocrStatus = "";
+  let ocrMessage = "";
+  let pdfaProfile = "pdfa-2b";
+  let pdfaStatus = "";
+  let pdfaMessage = "";
 
   $: if (files.length > 0) {
     unlockNeedsPassword = false;
@@ -103,6 +169,53 @@
     lockPasswordConfirm = "";
     lockError = "";
     lockSuccess = "";
+    lockPreset = "balanced";
+    showLockPassword = false;
+    repairStatus = "";
+    repairMessage = "";
+    ocrLanguage = "eng";
+    ocrStrategy = "searchable-overlay";
+    ocrStatus = "";
+    ocrMessage = "";
+    pdfaProfile = "pdfa-2b";
+    pdfaStatus = "";
+    pdfaMessage = "";
+    metadataTitle = "";
+    metadataAuthor = "";
+    metadataSubject = "";
+    metadataKeywords = "";
+    metadataStatus = "";
+    metadataMessage = "";
+    headerFooterPreset = "standard";
+    headerFooterSelection = "";
+    headerFooterText = "";
+    footerText = "";
+    unlockPresetStrategy = "auto";
+    protectPreset = "balanced";
+    protectAllowPrint = false;
+    protectAllowCopy = false;
+    protectAllowEdit = false;
+  }
+
+  function emitTemplatedOutputs(operation, outputs, extras = {}) {
+    const named = applyOutputNamingTemplate(outputs, {
+      template: outputNameTemplate,
+      operation,
+      ...extras
+    });
+    dispatch("output", named);
+  }
+
+  function generateSuggestedPassword() {
+    const charset = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*";
+    const length = lockPresetMinLength(lockPreset) + 2;
+    let value = "";
+    for (let i = 0; i < length; i += 1) {
+      value += charset[Math.floor(Math.random() * charset.length)];
+    }
+    lockPassword = value;
+    lockPasswordConfirm = value;
+    lockError = "";
   }
 
   async function runUnlock() {
@@ -111,18 +224,20 @@
     unlockError = "";
     unlockSuccess = "";
     try {
+      validateUnlockPresetStrategy({
+        strategy: unlockPresetStrategy,
+        password: unlockPassword
+      });
       const blob = await unlockPdf(files[0], unlockPassword, (p) => dispatch("progress", p));
       const baseName = files[0].name.replace(/\.pdf$/i, "");
-      dispatch("output", [{ name: `${baseName}-unlocked.pdf`, blob }]);
+      emitTemplatedOutputs("unlock", [{ name: `${baseName}-unlocked.pdf`, blob }]);
       unlockSuccess = "PDF unlocked and added to results.";
       unlockNeedsPassword = false;
+      unlockPassword = "";
     } catch (e) {
-      if (e.needsPassword) {
-        unlockNeedsPassword = true;
-        unlockError = e.message;
-      } else {
-        unlockError = e.message || "Unlock failed.";
-      }
+      const classified = classifyUnlockError(e);
+      unlockNeedsPassword = classified.kind === "password_required";
+      unlockError = classified.message;
     } finally {
       unlocking = false;
     }
@@ -134,23 +249,38 @@
     lockError = "";
     lockSuccess = "";
 
-    if (!lockPassword.trim()) {
-      lockError = "Enter a password to lock this PDF.";
+    const passwordCheck = validateLockPassword(lockPassword, lockPreset);
+    if (!passwordCheck.ok) {
+      lockError = passwordCheck.message;
       return;
     }
-    if (lockPassword !== lockPasswordConfirm) {
-      lockError = "Password and confirmation do not match.";
+
+    const confirmationCheck = validateLockConfirmation(passwordCheck.value, lockPasswordConfirm);
+    if (!confirmationCheck.ok) {
+      lockError = confirmationCheck.message;
       return;
     }
 
     locking = true;
     try {
-      const blob = await lockPdf(files[0], lockPassword, (p) => dispatch("progress", p));
+      resolveProtectPresetConfig({
+        preset: protectPreset,
+        permissions: protectPreset === "custom"
+          ? {
+              print: protectAllowPrint,
+              copy: protectAllowCopy,
+              edit: protectAllowEdit
+            }
+          : undefined
+      });
+
+      const blob = await lockPdf(files[0], passwordCheck.value, (p) => dispatch("progress", p));
       const baseName = files[0].name.replace(/\.pdf$/i, "");
-      dispatch("output", [{ name: `${baseName}-locked.pdf`, blob }]);
+      emitTemplatedOutputs("lock", [{ name: `${baseName}-locked.pdf`, blob }]);
       lockSuccess = "PDF locked and added to results.";
       lockPassword = "";
       lockPasswordConfirm = "";
+      showLockPassword = false;
     } catch (e) {
       lockError = e?.message || "Lock failed.";
     } finally {
@@ -200,6 +330,13 @@
     previewUrl = "";
     previewError = "";
     previewLoading = false;
+    previewRenderMode = "image";
+    previewFallbackNote = "";
+    if (previewBlobUrl) {
+      URL.revokeObjectURL(previewBlobUrl);
+      previewBlobUrl = "";
+      previewBlobFileKey = "";
+    }
     pageOrderFileKey = "";
     pageOrder = [];
     thumbnailFileKey = "";
@@ -227,6 +364,15 @@
     } catch (error) {
       splitPreview = "";
       splitPreviewError = error.message;
+    }
+  } else if (splitMode === "size") {
+    const sizeMb = Number.parseFloat(splitMaxChunkMb);
+    if (!Number.isFinite(sizeMb) || sizeMb <= 0) {
+      splitPreview = "";
+      splitPreviewError = "Enter a split size greater than 0 MB.";
+    } else {
+      splitPreviewError = "";
+      splitPreview = `Will split into parts targeting ${sizeMb} MB max per output (may exceed for large single pages).`;
     }
   } else {
     splitPreview = "";
@@ -272,23 +418,24 @@
 
   async function loadPreview(fileEntry, page) {
     const requestId = ++previewRequestId;
+    const fileKey = `${fileEntry.id}|${fileEntry.name}|${fileEntry.size}`;
     previewLoading = true;
     previewError = "";
+    previewFallbackNote = "";
 
-    try {
-      const result = await renderPdfPreviewPage(fileEntry, { page, scale: 1.25 });
-      if (requestId !== previewRequestId) return;
-      previewPage = result.page;
-      previewTotalPages = result.totalPages;
-      previewUrl = result.dataUrl;
-    } catch (error) {
-      if (requestId !== previewRequestId) return;
-      previewError = error.message || "Unable to render PDF preview.";
-      previewUrl = "";
-    } finally {
-      if (requestId === previewRequestId) {
-        previewLoading = false;
+    if (!previewBlobUrl || previewBlobFileKey !== fileKey) {
+      if (previewBlobUrl) {
+        URL.revokeObjectURL(previewBlobUrl);
       }
+      previewBlobUrl = URL.createObjectURL(fileEntry.file);
+      previewBlobFileKey = fileKey;
+    }
+    previewUrl = previewBlobUrl;
+    previewRenderMode = "pdf";
+    previewFallbackNote = "Showing embedded PDF preview.";
+    previewWrapRef?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (requestId === previewRequestId) {
+      previewLoading = false;
     }
   }
 
@@ -320,12 +467,73 @@
 
     const from = pageOrder.findIndex((page) => page === draggingPageOrder);
     const to = pageOrder.findIndex((page) => page === targetPage);
-    if (from < 0 || to < 0) return;
+    movePageOrderByIndex(from, to);
+  }
+
+  function movePageOrderByIndex(from, to) {
+    if (from < 0 || to < 0 || from === to) return;
 
     const next = [...pageOrder];
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
     pageOrder = next;
+  }
+
+  function movePageEarlier(pageNum) {
+    const from = pageOrder.findIndex((page) => page === pageNum);
+    if (from <= 0) return;
+    movePageOrderByIndex(from, from - 1);
+  }
+
+  function movePageLater(pageNum) {
+    const from = pageOrder.findIndex((page) => page === pageNum);
+    if (from < 0 || from >= pageOrder.length - 1) return;
+    movePageOrderByIndex(from, from + 1);
+  }
+
+  function movePageToStart(pageNum) {
+    const from = pageOrder.findIndex((page) => page === pageNum);
+    if (from <= 0) return;
+    movePageOrderByIndex(from, 0);
+  }
+
+  function movePageToEnd(pageNum) {
+    const from = pageOrder.findIndex((page) => page === pageNum);
+    if (from < 0 || from >= pageOrder.length - 1) return;
+    movePageOrderByIndex(from, pageOrder.length - 1);
+  }
+
+  function onPageOrderKeydown(event, pageNum) {
+    if (busy) return;
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      event.preventDefault();
+      movePageEarlier(pageNum);
+    } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      event.preventDefault();
+      movePageLater(pageNum);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      movePageToStart(pageNum);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      movePageToEnd(pageNum);
+    }
+  }
+
+  function isDefaultPageOrder() {
+    if (splitPageCount < 1 || pageOrder.length !== splitPageCount) return true;
+    for (let i = 0; i < pageOrder.length; i += 1) {
+      if (pageOrder[i] !== i + 1) return false;
+    }
+    return true;
+  }
+
+  function summarizePageOrder() {
+    if (!pageOrder.length) return "No page order loaded.";
+    const previewLimit = 12;
+    const shown = pageOrder.slice(0, previewLimit).join(", ");
+    const suffix = pageOrder.length > previewLimit ? ` ... (+${pageOrder.length - previewLimit} more)` : "";
+    return `Order: ${shown}${suffix}`;
   }
 
   function resetPageOrder() {
@@ -906,6 +1114,16 @@
     }
   }
 
+  $: {
+    try {
+      textWatermarkTargetPages = parseWatermarkSelection(textWatermarkSelection, previewTotalPages || splitPageCount);
+      textWatermarkSelectionError = "";
+    } catch (error) {
+      textWatermarkTargetPages = [];
+      textWatermarkSelectionError = error.message || "Invalid page selection.";
+    }
+  }
+
   $: if (watermarkImageUrl && previewTotalPages > 0) {
     ensureWatermarkPlacement(previewPage);
   }
@@ -921,6 +1139,9 @@
   }
 
   onDestroy(() => {
+    if (previewBlobUrl) {
+      URL.revokeObjectURL(previewBlobUrl);
+    }
     if (watermarkImageUrl) {
       URL.revokeObjectURL(watermarkImageUrl);
     }
@@ -935,36 +1156,53 @@
     try {
       if (task === "merge") {
         const blob = await mergePdfs(mergeQueue, (v) => dispatch("progress", v));
-        dispatch("output", [{ name: "merged.pdf", blob }]);
+        emitTemplatedOutputs("merge", [{ name: "merged.pdf", blob }]);
       } else if (task === "split") {
         const chunks = await splitPdf(
           files[0],
           {
             mode: splitMode,
-            selection: splitSelection
+            selection: splitSelection,
+            maxChunkMb: splitMaxChunkMb
           },
           (v) => dispatch("progress", v)
         );
-        dispatch("output", chunks.map((blob, i) => ({
+        emitTemplatedOutputs("split", chunks.map((blob, i) => ({
           name: `${files[0].name.replace(/\.pdf$/i, "")}-part-${i + 1}.pdf`,
           blob
         })));
       } else if (task === "extract-pages") {
         const blob = await extractPdfPages(files[0], pageActionSelection, (v) => dispatch("progress", v));
-        dispatch("output", [{
+        emitTemplatedOutputs("extract", [{
           name: `${files[0].name.replace(/\.pdf$/i, "")}-extracted.pdf`,
           blob
         }]);
       } else if (task === "remove-pages") {
         const blob = await removePdfPages(files[0], pageActionSelection, (v) => dispatch("progress", v));
-        dispatch("output", [{
+        emitTemplatedOutputs("remove", [{
           name: `${files[0].name.replace(/\.pdf$/i, "")}-removed-pages.pdf`,
           blob
         }]);
       } else if (task === "rotate-pages") {
         const blob = await rotatePdfPages(files[0], pageActionSelection, rotateAngle, (v) => dispatch("progress", v));
-        dispatch("output", [{
+        emitTemplatedOutputs("rotate", [{
           name: `${files[0].name.replace(/\.pdf$/i, "")}-rotated.pdf`,
+          blob
+        }]);
+      } else if (task === "crop-pages") {
+        const blob = await cropPdfPages(
+          files[0],
+          {
+            selection: cropSelection,
+            top: cropTop,
+            right: cropRight,
+            bottom: cropBottom,
+            left: cropLeft
+          },
+          (v) => dispatch("progress", v)
+        );
+        emitTemplatedOutputs("crop", [{
+          name: `${files[0].name.replace(/\.pdf$/i, "")}-cropped.pdf`,
           blob
         }]);
       } else if (task === "number-pages") {
@@ -977,8 +1215,23 @@
           },
           (v) => dispatch("progress", v)
         );
-        dispatch("output", [{
+        emitTemplatedOutputs("number", [{
           name: `${files[0].name.replace(/\.pdf$/i, "")}-numbered.pdf`,
+          blob
+        }]);
+      } else if (task === "header-footer") {
+        const blob = await addPdfHeaderFooter(
+          files[0],
+          {
+            selection: headerFooterSelection,
+            preset: headerFooterPreset,
+            headerText: headerFooterText,
+            footerText
+          },
+          (v) => dispatch("progress", v)
+        );
+        emitTemplatedOutputs("header-footer", [{
+          name: `${files[0].name.replace(/\.pdf$/i, "")}-header-footer.pdf`,
           blob
         }]);
       } else if (task === "watermark-image") {
@@ -1001,25 +1254,115 @@
           },
           (v) => dispatch("progress", v)
         );
-        dispatch("output", [{
+        emitTemplatedOutputs("watermark-image", [{
           name: `${files[0].name.replace(/\.pdf$/i, "")}-watermarked.pdf`,
           blob
         }]);
+      } else if (task === "watermark-text") {
+        if (textWatermarkSelectionError) {
+          throw new Error(textWatermarkSelectionError);
+        }
+
+        const blob = await addPdfTextWatermark(
+          files[0],
+          {
+            text: textWatermarkValue,
+            selection: textWatermarkSelection,
+            fontSize: textWatermarkSize,
+            opacity: clamp(Number.parseFloat(textWatermarkOpacity) / 100, 0, 1),
+            rotation: textWatermarkRotation,
+            position: textWatermarkPosition,
+            colorHex: textWatermarkColor
+          },
+          (v) => dispatch("progress", v)
+        );
+        emitTemplatedOutputs("watermark-text", [{
+          name: `${files[0].name.replace(/\.pdf$/i, "")}-text-watermarked.pdf`,
+          blob
+        }]);
+      } else if (task === "metadata-batch") {
+        const payload = {
+          title: metadataTitle,
+          author: metadataAuthor,
+          subject: metadataSubject,
+          keywords: metadataKeywords
+        };
+        if (!Object.values(payload).some((value) => `${value || ""}`.trim().length > 0)) {
+          throw new Error("Enter at least one metadata field before applying batch metadata.");
+        }
+
+        const outputs = [];
+        for (let i = 0; i < files.length; i += 1) {
+          const fileEntry = files[i];
+          const blob = await applyPdfMetadata(fileEntry, payload, () => {});
+          outputs.push({
+            name: `${fileEntry.name.replace(/\.pdf$/i, "")}-metadata.pdf`,
+            blob
+          });
+          dispatch("progress", Math.round(((i + 1) / files.length) * 100));
+        }
+        emitTemplatedOutputs("metadata", outputs);
+        metadataStatus = "processed";
+        metadataMessage = `Updated metadata for ${outputs.length} PDF${outputs.length === 1 ? "" : "s"}.`;
+      } else if (task === "repair") {
+        try {
+          const repaired = await repairPdf(files[0], (v) => dispatch("progress", v));
+          const base = files[0].name.replace(/\.pdf$/i, "");
+          const outName = repaired.status === "repaired" ? `${base}-repaired.pdf` : `${base}-verified.pdf`;
+          emitTemplatedOutputs("repair", [{ name: outName, blob: repaired.blob }]);
+          repairStatus = repaired.status;
+          repairMessage = repaired.note;
+        } catch (error) {
+          repairStatus = error?.repairStatus || "unrecoverable";
+          repairMessage = error?.message || "PDF is unrecoverable with current repair strategy.";
+          throw error;
+        }
+      } else if (task === "ocr-pilot") {
+        const result = await ocrPdfPilot(
+          files[0],
+          {
+            language: ocrLanguage,
+            strategy: ocrStrategy
+          },
+          (v) => dispatch("progress", v)
+        );
+        ocrStatus = result.status || "limited";
+        ocrMessage = result.note || "OCR pilot completed.";
+      } else if (task === "export-pdfa") {
+        try {
+          const blob = await exportPdfA(
+            files[0],
+            {
+              profile: pdfaProfile
+            },
+            (v) => dispatch("progress", v)
+          );
+          emitTemplatedOutputs("pdfa", [{
+            name: `${files[0].name.replace(/\.pdf$/i, "")}-${pdfaProfile}.pdf`,
+            blob
+          }], { profile: pdfaProfile });
+          pdfaStatus = "processed";
+          pdfaMessage = `Exported as ${pdfaProfile.toUpperCase()}.`;
+        } catch (error) {
+          pdfaStatus = error?.exportStatus || "limited";
+          pdfaMessage = error?.message || "PDF/A export is currently unavailable.";
+          throw error;
+        }
       } else if (task === "reorder-pages") {
         const blob = await reorderPdfPages(files[0], pageOrder, (v) => dispatch("progress", v));
-        dispatch("output", [{
+        emitTemplatedOutputs("reorder", [{
           name: `${files[0].name.replace(/\.pdf$/i, "")}-reordered.pdf`,
           blob
         }]);
       } else if (task === "compress") {
         const blob = await compressPdf(files[0], 0.75, (v) => dispatch("progress", v));
-        dispatch("output", [{ name: `${files[0].name.replace(/\.pdf$/i, "")}-compressed.pdf`, blob }]);
+        emitTemplatedOutputs("compress", [{ name: `${files[0].name.replace(/\.pdf$/i, "")}-compressed.pdf`, blob }]);
       } else if (task === "to-images") {
         const outputs = await pdfToImages(files[0], imageFormat, (v) => dispatch("progress", v));
-        dispatch("output", outputs);
+        emitTemplatedOutputs("to-images", outputs);
       } else if (task === "to-djvu") {
         const blob = await pdfToDjvu(files[0], (v) => dispatch("progress", v));
-        dispatch("output", [{ name: `${files[0].name.replace(/\.pdf$/i, "")}.djvu`, blob }]);
+        emitTemplatedOutputs("to-djvu", [{ name: `${files[0].name.replace(/\.pdf$/i, "")}.djvu`, blob }]);
       }
       dispatch("progress", 100);
     } catch (error) {
@@ -1040,29 +1383,45 @@
     <span class="meta-chip">Active file <strong>{files[0]?.name ?? "No file selected"}</strong></span>
   </div>
 
+  <section class="page-actions compact-card">
+    <header>
+      <h4>Output naming template</h4>
+      <span>Use tokens: {"{name}"} {"{op}"} {"{index}"} {"{ext}"} {"{date}"} {"{time}"} {"{profile}"}</span>
+    </header>
+    <label for="pdf-output-template">Template</label>
+    <input id="pdf-output-template" type="text" bind:value={outputNameTemplate} disabled={busy} />
+  </section>
+
   <div class="actions ops-primary" role="group" aria-label="Primary PDF actions">
     <button type="button" on:click={() => run("split")} disabled={busy || files.length < 1}>Split PDF</button>
     <button type="button" on:click={() => run("merge")} disabled={busy || files.length < 2}>Merge PDFs</button>
     <button type="button" on:click={() => run("compress")} disabled={busy || files.length < 1}>Compress PDF</button>
   </div>
 
-  <section class="preview-wrap">
+  <section class="preview-wrap" bind:this={previewWrapRef}>
     <header>
       <h4>PDF Preview</h4>
       <span>{previewTotalPages > 0 ? `Page ${previewPage} of ${previewTotalPages}` : "No preview"}</span>
     </header>
     {#if previewLoading}
       <p class="preview-message">Rendering preview...</p>
+    {:else if previewUrl}
+      {#if previewRenderMode === "image"}
+        <img src={previewUrl} alt={`Preview page ${previewPage}`} />
+      {:else}
+        <iframe class="preview-pdf-frame" src={previewUrl} title="Embedded PDF preview"></iframe>
+      {/if}
+      {#if previewFallbackNote}
+        <p class="preview-message">{previewFallbackNote}</p>
+      {/if}
     {:else if previewError}
       <p class="preview-error">{previewError}</p>
-    {:else if previewUrl}
-      <img src={previewUrl} alt={`Preview page ${previewPage}`} />
     {:else}
       <p class="preview-message">Select a PDF to preview pages.</p>
     {/if}
     <div class="preview-actions">
-      <button class="secondary" type="button" on:click={() => changePreviewPage(-1)} disabled={busy || previewPage <= 1}>Previous</button>
-      <button class="secondary" type="button" on:click={() => changePreviewPage(1)} disabled={busy || previewTotalPages < 1 || previewPage >= previewTotalPages}>Next</button>
+      <button class="secondary" type="button" on:click={() => changePreviewPage(-1)} disabled={busy || previewRenderMode !== "image" || previewPage <= 1}>Previous</button>
+      <button class="secondary" type="button" on:click={() => changePreviewPage(1)} disabled={busy || previewRenderMode !== "image" || previewTotalPages < 1 || previewPage >= previewTotalPages}>Next</button>
     </div>
   </section>
 
@@ -1093,6 +1452,7 @@
       <select id="pdf-split-mode" bind:value={splitMode}>
         <option value="per-page">One output per page (default)</option>
         <option value="custom">Custom page groups</option>
+        <option value="size">Split by maximum output size</option>
       </select>
 
       {#if splitMode === "custom"}
@@ -1122,6 +1482,56 @@
           <small class="split-error">{splitPreviewError}</small>
         {/if}
       {/if}
+
+      {#if splitMode === "size"}
+        <label for="pdf-split-size-mb">Max output size (MB)</label>
+        <input
+          id="pdf-split-size-mb"
+          type="number"
+          min="0.1"
+          step="0.1"
+          bind:value={splitMaxChunkMb}
+          disabled={busy}
+        />
+        <div class="split-meta">
+          <small>
+            Creates chunked outputs close to this size limit. A single large page can exceed the limit.
+          </small>
+        </div>
+      {/if}
+
+      {#if splitPreview}
+        <small class="split-preview">{splitPreview}</small>
+      {/if}
+      {#if splitPreviewError}
+        <small class="split-error">{splitPreviewError}</small>
+      {/if}
+    </section>
+  </details>
+
+  <details class="compact-section">
+    <summary>Header/Footer presets</summary>
+    <section class="page-actions compact-card">
+      <label for="pdf-header-footer-preset">Preset</label>
+      <select id="pdf-header-footer-preset" bind:value={headerFooterPreset} disabled={busy}>
+        <option value="standard">Standard</option>
+        <option value="confidential">Confidential</option>
+        <option value="page-date">Page + Date</option>
+        <option value="custom">Custom</option>
+      </select>
+
+      <label for="pdf-header-footer-selection">Page selection (optional)</label>
+      <input id="pdf-header-footer-selection" type="text" bind:value={headerFooterSelection} placeholder="Empty = all pages" disabled={busy} />
+
+      <label for="pdf-header-text">Header text</label>
+      <input id="pdf-header-text" type="text" bind:value={headerFooterText} disabled={busy} />
+
+      <label for="pdf-footer-text">Footer text</label>
+      <input id="pdf-footer-text" type="text" bind:value={footerText} disabled={busy} />
+
+      <div class="actions">
+        <button class="secondary" type="button" on:click={() => run("header-footer")} disabled={busy || files.length < 1}>Apply Header/Footer Preset</button>
+      </div>
     </section>
   </details>
 
@@ -1163,8 +1573,12 @@
     <section class="page-actions">
       <header>
         <h4>Page organization</h4>
-        <span>Drag pages to reorder, then apply</span>
+        <span>Drag, use arrow keys, or tap move controls</span>
       </header>
+      <small class="page-order-summary">{summarizePageOrder()}</small>
+      <small class="page-order-summary {isDefaultPageOrder() ? "is-default" : "is-custom"}">
+        {isDefaultPageOrder() ? "Using original page sequence." : "Custom page sequence ready to apply."}
+      </small>
       <div class="order-quick-actions">
         <button class="secondary" type="button" on:click={resetPageOrder} disabled={busy || splitPageCount < 1}>Reset</button>
         <button class="secondary" type="button" on:click={reversePageOrder} disabled={busy || splitPageCount < 2}>Reverse</button>
@@ -1172,13 +1586,18 @@
         <button class="secondary" type="button" on:click={sortPageOrderDesc} disabled={busy || splitPageCount < 2}>Sort Desc</button>
       </div>
       <ul class="page-order-list">
-        {#each pageOrder as pageNum (pageNum)}
+        {#each pageOrder as pageNum, index (pageNum)}
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <li
             draggable={!busy}
+            tabindex={busy ? undefined : 0}
+            aria-label={`Page ${pageNum} in position ${index + 1}`}
             on:dragstart={() => (draggingPageOrder = pageNum)}
             on:dragend={() => (draggingPageOrder = null)}
             on:dragover|preventDefault
             on:drop|preventDefault={() => reorderPageOrder(pageNum)}
+            on:keydown={(event) => onPageOrderKeydown(event, pageNum)}
           >
             <div class="page-thumb-wrap">
               {#if pageThumbnails[pageNum]}
@@ -1190,6 +1609,20 @@
             <div class="page-thumb-label">
               <button class="drag-handle" type="button" aria-label={`Reorder page ${pageNum}`} disabled={busy}>drag_indicator</button>
               <span>Page {pageNum}</span>
+            </div>
+            <div class="page-order-inline-actions">
+              <button class="secondary icon-action-btn" type="button" aria-label={`Move page ${pageNum} to first`} title="Move to first" on:click={() => movePageToStart(pageNum)} disabled={busy || index === 0}>
+                <span class="material-symbols-outlined" aria-hidden="true">vertical_align_top</span>
+              </button>
+              <button class="secondary icon-action-btn" type="button" aria-label={`Move page ${pageNum} earlier`} title="Move earlier" on:click={() => movePageEarlier(pageNum)} disabled={busy || index === 0}>
+                <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>
+              </button>
+              <button class="secondary icon-action-btn" type="button" aria-label={`Move page ${pageNum} later`} title="Move later" on:click={() => movePageLater(pageNum)} disabled={busy || index === pageOrder.length - 1}>
+                <span class="material-symbols-outlined" aria-hidden="true">arrow_forward</span>
+              </button>
+              <button class="secondary icon-action-btn" type="button" aria-label={`Move page ${pageNum} to last`} title="Move to last" on:click={() => movePageToEnd(pageNum)} disabled={busy || index === pageOrder.length - 1}>
+                <span class="material-symbols-outlined" aria-hidden="true">vertical_align_bottom</span>
+              </button>
             </div>
           </li>
         {/each}
@@ -1227,6 +1660,43 @@
         <button class="secondary" on:click={() => run("rotate-pages")} disabled={busy || files.length < 1}>Rotate Pages</button>
       </div>
       <small>For rotate: leave selection empty to rotate all pages.</small>
+
+      <hr class="watermark-divider" />
+
+      <header>
+        <h4>Crop pages</h4>
+        <span>Trim margins in points (72 points = 1 inch)</span>
+      </header>
+      <label for="pdf-crop-selection">Page selection (optional)</label>
+      <input
+        id="pdf-crop-selection"
+        type="text"
+        bind:value={cropSelection}
+        placeholder="Empty = all pages"
+        disabled={busy}
+      />
+      <div class="number-grid">
+        <div>
+          <label for="pdf-crop-top">Top margin (pt)</label>
+          <input id="pdf-crop-top" type="number" min="0" step="1" bind:value={cropTop} disabled={busy} />
+        </div>
+        <div>
+          <label for="pdf-crop-right">Right margin (pt)</label>
+          <input id="pdf-crop-right" type="number" min="0" step="1" bind:value={cropRight} disabled={busy} />
+        </div>
+        <div>
+          <label for="pdf-crop-bottom">Bottom margin (pt)</label>
+          <input id="pdf-crop-bottom" type="number" min="0" step="1" bind:value={cropBottom} disabled={busy} />
+        </div>
+        <div>
+          <label for="pdf-crop-left">Left margin (pt)</label>
+          <input id="pdf-crop-left" type="number" min="0" step="1" bind:value={cropLeft} disabled={busy} />
+        </div>
+      </div>
+      <div class="actions">
+        <button class="secondary" on:click={() => run("crop-pages")} disabled={busy || files.length < 1}>Crop Pages</button>
+      </div>
+      <small>Leave selection empty to crop all pages with the same margins.</small>
     </section>
   </details>
 
@@ -1278,6 +1748,73 @@
   <details class="advanced-subsection">
     <summary>Watermark Studio</summary>
     <section class="page-actions watermark-section">
+    <header>
+      <h4>Text watermark</h4>
+      <span>Stamp labels like Draft or Confidential</span>
+    </header>
+
+    <label for="pdf-text-watermark">Watermark text</label>
+    <input
+      id="pdf-text-watermark"
+      type="text"
+      bind:value={textWatermarkValue}
+      placeholder="Example: CONFIDENTIAL"
+      disabled={busy || files.length < 1}
+    />
+
+    <label for="pdf-text-watermark-selection">Page selection (optional)</label>
+    <input
+      id="pdf-text-watermark-selection"
+      type="text"
+      bind:value={textWatermarkSelection}
+      placeholder="Empty = all pages"
+      disabled={busy}
+    />
+    {#if textWatermarkSelectionError}
+      <small class="split-error">{textWatermarkSelectionError}</small>
+    {:else}
+      <small>Target pages: {textWatermarkTargetPages.length || previewTotalPages || splitPageCount || 0} page(s)</small>
+    {/if}
+
+    <div class="watermark-grid text-watermark-grid">
+      <div>
+        <label for="pdf-text-watermark-size">Font size</label>
+        <input id="pdf-text-watermark-size" type="number" min="8" max="240" step="1" bind:value={textWatermarkSize} />
+      </div>
+      <div>
+        <label for="pdf-text-watermark-opacity">Opacity (%)</label>
+        <input id="pdf-text-watermark-opacity" type="number" min="0" max="100" step="1" bind:value={textWatermarkOpacity} />
+      </div>
+      <div>
+        <label for="pdf-text-watermark-rotation">Rotation (deg)</label>
+        <input id="pdf-text-watermark-rotation" type="number" min="-360" max="360" step="1" bind:value={textWatermarkRotation} />
+      </div>
+      <div>
+        <label for="pdf-text-watermark-position">Position</label>
+        <select id="pdf-text-watermark-position" bind:value={textWatermarkPosition}>
+          <option value="center">Center</option>
+          <option value="top-left">Top left</option>
+          <option value="top-center">Top center</option>
+          <option value="top-right">Top right</option>
+          <option value="bottom-left">Bottom left</option>
+          <option value="bottom-center">Bottom center</option>
+          <option value="bottom-right">Bottom right</option>
+        </select>
+      </div>
+      <div>
+        <label for="pdf-text-watermark-color">Color</label>
+        <input id="pdf-text-watermark-color" type="color" bind:value={textWatermarkColor} />
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="secondary" type="button" on:click={() => run("watermark-text")} disabled={busy || files.length < 1 || !textWatermarkValue.trim() || !!textWatermarkSelectionError}>
+        Apply Text Watermark
+      </button>
+    </div>
+
+    <hr class="watermark-divider" />
+
     <header>
       <h4>Image watermark</h4>
       <span>Drag and set exact position per page</span>
@@ -1477,6 +2014,116 @@
   <details class="advanced-subsection">
     <summary>Security</summary>
 
+  <section class="page-actions ocr-section">
+    <header>
+      <h4>OCR Pilot</h4>
+      <span>Planned searchable PDF pipeline with explicit capability status</span>
+    </header>
+    <p class="unlock-desc">Pilot mode reports capability status and caveats. Full OCR output is staged for a later parity milestone.</p>
+
+    <div class="number-grid">
+      <div>
+        <label for="pdf-ocr-language">Language</label>
+        <select id="pdf-ocr-language" bind:value={ocrLanguage} disabled={busy}>
+          <option value="eng">English (eng)</option>
+          <option value="hin">Hindi (hin)</option>
+          <option value="deu">German (deu)</option>
+          <option value="spa">Spanish (spa)</option>
+        </select>
+      </div>
+      <div>
+        <label for="pdf-ocr-strategy">Output strategy</label>
+        <select id="pdf-ocr-strategy" bind:value={ocrStrategy} disabled={busy}>
+          <option value="searchable-overlay">Searchable text overlay</option>
+          <option value="hidden-text-layer">Hidden text layer</option>
+        </select>
+      </div>
+    </div>
+
+    {#if ocrMessage}
+      <p class={`unlock-msg ${ocrStatus === "limited" ? "unlock-msg--neutral" : "unlock-msg--success"}`}>{ocrMessage}</p>
+    {/if}
+
+    <div class="actions">
+      <button class="secondary" type="button" on:click={() => run("ocr-pilot")} disabled={busy || files.length < 1}>
+        Run OCR Pilot Check
+      </button>
+    </div>
+  </section>
+
+  <section class="page-actions repair-section">
+    <header>
+      <h4>Batch metadata</h4>
+      <span>Apply metadata to all loaded PDFs</span>
+    </header>
+    <div class="number-grid">
+      <div>
+        <label for="pdf-meta-title">Title</label>
+        <input id="pdf-meta-title" type="text" bind:value={metadataTitle} disabled={busy} />
+      </div>
+      <div>
+        <label for="pdf-meta-author">Author</label>
+        <input id="pdf-meta-author" type="text" bind:value={metadataAuthor} disabled={busy} />
+      </div>
+      <div>
+        <label for="pdf-meta-subject">Subject</label>
+        <input id="pdf-meta-subject" type="text" bind:value={metadataSubject} disabled={busy} />
+      </div>
+      <div>
+        <label for="pdf-meta-keywords">Keywords (comma separated)</label>
+        <input id="pdf-meta-keywords" type="text" bind:value={metadataKeywords} disabled={busy} />
+      </div>
+    </div>
+    {#if metadataMessage}
+      <p class={`unlock-msg ${metadataStatus === "processed" ? "unlock-msg--success" : "unlock-msg--error"}`}>{metadataMessage}</p>
+    {/if}
+    <div class="actions">
+      <button class="secondary" type="button" on:click={() => run("metadata-batch")} disabled={busy || files.length < 1}>Apply Batch Metadata</button>
+    </div>
+  </section>
+
+  <section class="page-actions repair-section">
+    <header>
+      <h4>Export PDF/A</h4>
+      <span>Archive-focused profile export</span>
+    </header>
+    <label for="pdf-pdfa-profile">PDF/A profile</label>
+    <select id="pdf-pdfa-profile" bind:value={pdfaProfile} disabled={busy}>
+      <option value="pdfa-1b">PDF/A-1b</option>
+      <option value="pdfa-2b">PDF/A-2b</option>
+      <option value="pdfa-3b">PDF/A-3b</option>
+    </select>
+    <p class="unlock-desc">If runtime support is unavailable, a clear limited-capability message is shown.</p>
+
+    {#if pdfaMessage}
+      <p class={`unlock-msg ${pdfaStatus === "processed" ? "unlock-msg--success" : pdfaStatus === "limited" ? "unlock-msg--neutral" : "unlock-msg--error"}`}>{pdfaMessage}</p>
+    {/if}
+
+    <div class="actions">
+      <button class="secondary" type="button" on:click={() => run("export-pdfa")} disabled={busy || files.length < 1}>
+        Export PDF/A
+      </button>
+    </div>
+  </section>
+
+  <section class="page-actions repair-section">
+    <header>
+      <h4>Repair PDF</h4>
+      <span>Recover malformed files with explicit outcome status</span>
+    </header>
+    <p class="unlock-desc">Runs validation first, then attempts safe recovery if needed.</p>
+
+    {#if repairMessage}
+      <p class={`unlock-msg ${repairStatus === "repaired" ? "unlock-msg--success" : repairStatus === "unrecoverable" ? "unlock-msg--error" : "unlock-msg--neutral"}`}>{repairMessage}</p>
+    {/if}
+
+    <div class="actions">
+      <button class="secondary" type="button" on:click={() => run("repair")} disabled={busy || files.length < 1}>
+        Repair PDF
+      </button>
+    </div>
+  </section>
+
   <!-- PDF Unlock section -->
   <section class="page-actions unlock-section">
     <header>
@@ -1484,6 +2131,13 @@
       <span>Remove passwords and restrictions</span>
     </header>
     <p class="unlock-desc">Removes owner restrictions (print, copy, edit locks) without a password. For user-password protected PDFs, enter the password below.</p>
+
+    <label for="pdf-unlock-strategy">Unlock preset</label>
+    <select id="pdf-unlock-strategy" bind:value={unlockPresetStrategy} disabled={unlocking}>
+      <option value="auto">Auto detect</option>
+      <option value="password_required">Password required</option>
+      <option value="restrictions_only">Restrictions only</option>
+    </select>
 
     {#if unlockNeedsPassword || unlockPassword}
       <label for="pdf-unlock-password">Password</label>
@@ -1517,14 +2171,48 @@
       <h4>Lock PDF</h4>
       <span>Protect with an opening password</span>
     </header>
-    <p class="unlock-desc">Creates an encrypted PDF that requires a password to open.</p>
+    <p class="unlock-desc">Creates an encrypted PDF that requires a password to open. Choose a preset to simplify policy.</p>
+
+    <label for="pdf-protect-preset">Protect preset</label>
+    <select id="pdf-protect-preset" bind:value={protectPreset} disabled={locking}>
+      <option value="balanced">Balanced restrictions</option>
+      <option value="print_friendly">Print friendly</option>
+      <option value="locked_down">Locked down</option>
+      <option value="custom">Custom restrictions</option>
+    </select>
+
+    {#if protectPreset === "custom"}
+      <div class="lock-grid">
+        <label class="lock-toggle"><input type="checkbox" bind:checked={protectAllowPrint} disabled={locking} /><span>Allow print</span></label>
+        <label class="lock-toggle"><input type="checkbox" bind:checked={protectAllowCopy} disabled={locking} /><span>Allow copy</span></label>
+        <label class="lock-toggle"><input type="checkbox" bind:checked={protectAllowEdit} disabled={locking} /><span>Allow edit</span></label>
+      </div>
+      <small>At least one permission must remain restricted.</small>
+    {/if}
+
+    <label for="pdf-lock-preset">Security preset</label>
+    <select id="pdf-lock-preset" bind:value={lockPreset} disabled={locking}>
+      <option value="quick">Quick (minimum 6 characters)</option>
+      <option value="balanced">Balanced (minimum 10 characters)</option>
+      <option value="strong">Strong (minimum 14 characters)</option>
+    </select>
+
+    <div class="lock-helpers" role="group" aria-label="Lock password helpers">
+      <button class="secondary" type="button" on:click={generateSuggestedPassword} disabled={locking || busy || files.length < 1}>
+        Generate password
+      </button>
+      <label class="lock-toggle">
+        <input type="checkbox" bind:checked={showLockPassword} disabled={locking} />
+        <span>Show password</span>
+      </label>
+    </div>
 
     <div class="lock-grid">
       <div>
         <label for="pdf-lock-password">Password</label>
         <input
           id="pdf-lock-password"
-          type="password"
+          type={showLockPassword ? "text" : "password"}
           bind:value={lockPassword}
           placeholder="Enter new PDF password"
           disabled={locking}
@@ -1534,7 +2222,7 @@
         <label for="pdf-lock-password-confirm">Confirm password</label>
         <input
           id="pdf-lock-password-confirm"
-          type="password"
+          type={showLockPassword ? "text" : "password"}
           bind:value={lockPasswordConfirm}
           placeholder="Re-enter password"
           disabled={locking}
@@ -1555,6 +2243,7 @@
         {locking ? "Locking..." : "Lock PDF"}
       </button>
     </div>
+    <small>Current preset: {lockPresetLabel(lockPreset)}. Requirements: {lockPresetRequirementsText(lockPreset)}.</small>
   </section>
   </details>
   </details>
@@ -1812,6 +2501,15 @@
     background: var(--md-sys-color-surface);
   }
 
+  .preview-pdf-frame {
+    width: 100%;
+    height: 420px;
+    border: 0;
+    background: var(--md-sys-color-surface);
+    border-bottom: 1px solid var(--md-sys-color-outline-variant);
+    display: block;
+  }
+
   .preview-actions {
     margin-top: 0.5rem;
     display: flex;
@@ -1867,6 +2565,20 @@
     margin: 0.2rem 0 0;
   }
 
+  .page-order-summary {
+    display: block;
+    margin: 0 0 0.35rem;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .page-order-summary.is-custom {
+    color: var(--md-sys-color-primary);
+  }
+
+  .page-order-summary.is-default {
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
   .order-quick-actions {
     display: flex;
     flex-wrap: wrap;
@@ -1899,6 +2611,11 @@
   .page-order-list li:active {
     cursor: grabbing;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  }
+
+  .page-order-list li:focus-visible {
+    outline: 2px solid var(--md-sys-color-primary);
+    outline-offset: 2px;
   }
 
   .page-thumb-wrap {
@@ -1934,6 +2651,21 @@
     gap: 0.25rem;
     padding: 0.3rem 0.4rem;
     border-top: 1px solid var(--md-sys-color-outline-variant);
+  }
+
+  .page-order-inline-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.3rem;
+    padding: 0.35rem 0.35rem 0.45rem;
+    border-top: 1px solid var(--md-sys-color-outline-variant);
+    background: color-mix(in srgb, var(--md-sys-color-surface-container) 55%, var(--md-sys-color-surface));
+  }
+
+  .page-order-inline-actions .icon-action-btn {
+    min-width: 0;
+    justify-content: center;
+    padding: 0.25rem;
   }
 
   .page-order-list span {
@@ -2252,6 +2984,7 @@
   }
 
   /* Unlock section */
+  .repair-section,
   .unlock-section,
   .lock-section {
     margin-top: 0.5rem;
@@ -2262,6 +2995,30 @@
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 0.6rem;
     margin-bottom: 0.2rem;
+  }
+
+  .lock-helpers {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0 0 0.7rem;
+    flex-wrap: wrap;
+  }
+
+  .lock-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0;
+    color: var(--md-sys-color-on-surface-variant);
+    font-size: 0.8rem;
+    font-weight: 500;
+  }
+
+  .lock-toggle input {
+    width: auto;
+    margin: 0;
   }
 
   .lock-grid > div {
@@ -2291,5 +3048,11 @@
     color: var(--app-state-success, #1a6b2f);
     background: color-mix(in srgb, var(--app-state-success, #1a6b2f) 12%, var(--md-sys-color-surface));
     border: 1px solid color-mix(in srgb, var(--app-state-success, #1a6b2f) 34%, var(--md-sys-color-outline-variant));
+  }
+
+  .unlock-msg--neutral {
+    color: var(--md-sys-color-on-surface-variant);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 85%, var(--md-sys-color-primary) 15%);
+    border: 1px solid var(--md-sys-color-outline-variant);
   }
 </style>

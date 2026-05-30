@@ -8,7 +8,18 @@ const app = mount(App, {
 });
 
 if ("serviceWorker" in navigator) {
+  const isLocalDev = import.meta.env.DEV || ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+
   window.addEventListener("load", () => {
+    if (isLocalDev) {
+      navigator.serviceWorker.getRegistrations()
+        .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+        .catch((error) => {
+          console.error("Service worker cleanup failed:", error);
+        });
+      return;
+    }
+
     const base = import.meta.env.BASE_URL || "/";
     const swUrl = `${base.replace(/\/$/, "")}/service-worker.js`;
     navigator.serviceWorker.register(swUrl).catch((error) => {

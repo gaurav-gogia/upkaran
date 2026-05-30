@@ -17,11 +17,15 @@ WebAssembly. Drop files in, get results out — nothing leaves your device.
 - Extract a page range into a new PDF
 - Remove pages by range
 - Rotate selected pages
+- Crop selected pages with margin controls
 - Add page numbers with configurable position and style
+- Add text or image watermarks
 - Compress PDF (via Go WebAssembly)
 - Convert PDF pages to images (PNG / JPEG / WebP)
+- Repair malformed PDFs with explicit recovery status
+- OCR pilot entrypoint with explicit capability status
 - Unlock PDF (remove restrictions or password with provided passphrase)
-- Lock PDF with an opening password
+- Lock PDF with an opening password and security presets
 
 ### Image Tools
 
@@ -103,6 +107,42 @@ npm run build:wasm
 This runs `scripts/build-wasm.ps1`, which compiles the Go source under
 `src/wasm/` into `.wasm` files and copies the Go runtime helper (`wasm_exec.js`)
 into `public/wasm/`.
+
+### Reliability Baseline (Tier A)
+
+```bash
+npm run reliability:sample
+npm run reliability:baseline
+```
+
+Or run both in sequence:
+
+```bash
+npm run reliability:full
+```
+
+`reliability:sample` generates local fixture files, executes Tier A smoke
+checks, and writes measured pass/fail + duration records to:
+
+- `fixtures/reliability/results/latest.json`
+
+This reads:
+
+- `fixtures/reliability/manifest.json` for operation + fixture expectations
+- `fixtures/reliability/results/latest.json` for pass/fail runtime samples
+
+And writes reports to:
+
+- `fixtures/reliability/reports/baseline-latest.json`
+- `fixtures/reliability/reports/baseline-latest.md`
+
+Use this to track baseline pass rate and p95 runtime across parity-critical
+operations (watermark image/text, repair, crop, OCR pilot, Office conversion
+reliability checks, Tier A route smoke checks, PDF reorder edge-case checks, and
+lock/unlock policy checks, unlock runtime-path checks, and repair-unlock
+interaction checks, split-by-size checks, PDF/A export checks, batch metadata
+checks, output naming template checks, protect/unprotect preset checks, and
+header/footer preset checks).
 
 ---
 

@@ -1,0 +1,175 @@
+{
+    "version": 1,
+    "operations": [
+        {
+            "id": "pdf.watermark.image",
+            "title": "PDF image watermark",
+            "tier": "A",
+            "fixtures": [
+                "pdf/basic-a4.pdf",
+                "pdf/multi-page-mixed-size.pdf"
+            ]
+        },
+        {
+            "id": "pdf.watermark.text",
+            "title": "PDF text watermark",
+            "tier": "A",
+            "fixtures": [
+                "pdf/basic-a4.pdf",
+                "pdf/landscape-report.pdf"
+            ]
+        },
+        {
+            "id": "pdf.repair",
+            "title": "PDF repair",
+            "tier": "A",
+            "fixtures": [
+                "pdf/clean-reference.pdf",
+                "pdf/malformed-stream.pdf"
+            ]
+        },
+        {
+            "id": "pdf.crop",
+            "title": "PDF crop",
+            "tier": "A",
+            "fixtures": [
+                "pdf/basic-a4.pdf",
+                "pdf/multi-page-mixed-size.pdf"
+            ]
+        },
+        {
+            "id": "pdf.reorder",
+            "title": "PDF reorder",
+            "tier": "A",
+            "fixtures": [
+                "pdf/multi-page-mixed-size.pdf::reverse",
+                "pdf/basic-a4.pdf::identity",
+                "pdf/multi-page-mixed-size.pdf::duplicate-order"
+            ]
+        },
+        {
+            "id": "pdf.split.size",
+            "title": "PDF split by size",
+            "tier": "B",
+            "fixtures": [
+                "pdf/multi-page-mixed-size.pdf::size-small-limit",
+                "pdf/basic-a4.pdf::size-invalid-limit"
+            ]
+        },
+        {
+            "id": "pdf.pdfa.export",
+            "title": "PDF/A export",
+            "tier": "B",
+            "fixtures": [
+                "pdf/basic-a4.pdf::profile-2b-success",
+                "pdf/basic-a4.pdf::profile-invalid",
+                "pdf/basic-a4.pdf::runtime-unavailable"
+            ]
+        },
+        {
+            "id": "pdf.metadata.batch",
+            "title": "PDF metadata batch",
+            "tier": "B",
+            "fixtures": [
+                "pdf/basic-a4.pdf::metadata-valid",
+                "pdf/basic-a4.pdf::metadata-invalid-title-length"
+            ]
+        },
+        {
+            "id": "pdf.output.naming",
+            "title": "PDF output naming",
+            "tier": "B",
+            "fixtures": [
+                "pdf/naming::collision-dedupe",
+                "pdf/naming::missing-extension-template"
+            ]
+        },
+        {
+            "id": "pdf.protect.presets",
+            "title": "PDF protect presets",
+            "tier": "B",
+            "fixtures": [
+                "pdf/protect::preset-conflict",
+                "pdf/protect::invalid-permission-combo",
+                "pdf/unprotect::strategy-conflict"
+            ]
+        },
+        {
+            "id": "pdf.header-footer.presets",
+            "title": "PDF header/footer presets",
+            "tier": "B",
+            "fixtures": [
+                "pdf/basic-a4.pdf::header-footer-confidential",
+                "pdf/basic-a4.pdf::header-footer-custom-empty"
+            ]
+        },
+        {
+            "id": "pdf.lock-unlock.policy",
+            "title": "PDF lock/unlock policy",
+            "tier": "A",
+            "fixtures": [
+                "pdf/security::balanced-too-short",
+                "pdf/security::balanced-missing-digit",
+                "pdf/security::strong-missing-symbol",
+                "pdf/security::strong-valid",
+                "pdf/security::confirm-mismatch",
+                "pdf/security::unlock-password-required",
+                "pdf/security::unlock-incorrect-password",
+                "pdf/security::unlock-open-failed"
+            ]
+        },
+        {
+            "id": "pdf.unlock.runtime",
+            "title": "PDF unlock runtime",
+            "tier": "A",
+            "fixtures": [
+                "pdf/security-runtime::password-required",
+                "pdf/security-runtime::incorrect-password",
+                "pdf/security-runtime::valid-password"
+            ]
+        },
+        {
+            "id": "pdf.repair.unlock-interaction",
+            "title": "PDF repair unlock interaction",
+            "tier": "A",
+            "fixtures": [
+                "pdf/repair-security::unlock-required-before-repair",
+                "pdf/repair-security::unrecoverable-encrypted-classification"
+            ]
+        },
+        {
+            "id": "pdf.ocr.pilot",
+            "title": "PDF OCR pilot",
+            "tier": "A",
+            "fixtures": [
+                "pdf/basic-a4.pdf"
+            ]
+        },
+        {
+            "id": "content.office.reliability",
+            "title": "Office conversion reliability",
+            "tier": "B",
+            "fixtures": [
+                "office/sample.docx",
+                "office/sample.pptx",
+                "office/sample.xlsx",
+                "office/legacy.doc",
+                "office/legacy.ppt",
+                "office/legacy.xls",
+                "office/odf.odt"
+            ]
+        },
+        {
+            "id": "app.tier-a.route-smoke",
+            "title": "Tier A route smoke",
+            "tier": "A",
+            "fixtures": [
+                "app/routes/pdf-route-resolution",
+                "app/routes/selection-priority",
+                "app/routes/drop-routing-mixed-bucket",
+                "app/routes/app-pdf-entrypoint",
+                "app/routes/pdf-tool-actions"
+            ]
+        }
+    ]
+}

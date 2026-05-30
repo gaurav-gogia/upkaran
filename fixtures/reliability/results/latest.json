@@ -1,0 +1,413 @@
+{
+  "generatedAt": "2026-05-30T16:55:28.408Z",
+  "results": [
+    {
+      "operation": "pdf.watermark.image",
+      "fixture": "pdf/basic-a4.pdf",
+      "status": "pass",
+      "durationMs": 16.324000000000012,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.269Z"
+    },
+    {
+      "operation": "pdf.watermark.image",
+      "fixture": "pdf/multi-page-mixed-size.pdf",
+      "status": "pass",
+      "durationMs": 5.2712999999999965,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.275Z"
+    },
+    {
+      "operation": "pdf.watermark.text",
+      "fixture": "pdf/basic-a4.pdf",
+      "status": "pass",
+      "durationMs": 22.195600000000013,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.297Z"
+    },
+    {
+      "operation": "pdf.watermark.text",
+      "fixture": "pdf/landscape-report.pdf",
+      "status": "pass",
+      "durationMs": 3.4938000000000216,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.301Z"
+    },
+    {
+      "operation": "pdf.repair",
+      "fixture": "pdf/clean-reference.pdf",
+      "status": "pass",
+      "durationMs": 1.4709000000000287,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.302Z"
+    },
+    {
+      "operation": "pdf.repair",
+      "fixture": "pdf/malformed-stream.pdf",
+      "status": "pass",
+      "durationMs": 30.6669,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.333Z"
+    },
+    {
+      "operation": "pdf.crop",
+      "fixture": "pdf/basic-a4.pdf",
+      "status": "pass",
+      "durationMs": 2.361499999999978,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.335Z"
+    },
+    {
+      "operation": "pdf.crop",
+      "fixture": "pdf/multi-page-mixed-size.pdf",
+      "status": "pass",
+      "durationMs": 2.228399999999965,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.338Z"
+    },
+    {
+      "operation": "pdf.reorder",
+      "fixture": "pdf/multi-page-mixed-size.pdf::reverse",
+      "status": "pass",
+      "durationMs": 4.779899999999998,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.342Z"
+    },
+    {
+      "operation": "pdf.reorder",
+      "fixture": "pdf/basic-a4.pdf::identity",
+      "status": "pass",
+      "durationMs": 2.496399999999994,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.345Z"
+    },
+    {
+      "operation": "pdf.reorder",
+      "fixture": "pdf/multi-page-mixed-size.pdf::duplicate-order",
+      "status": "pass",
+      "durationMs": 1.3700000000000045,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.347Z"
+    },
+    {
+      "operation": "pdf.split.size",
+      "fixture": "pdf/multi-page-mixed-size.pdf::size-small-limit",
+      "status": "pass",
+      "durationMs": 6.4103000000000065,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.353Z"
+    },
+    {
+      "operation": "pdf.split.size",
+      "fixture": "pdf/basic-a4.pdf::size-invalid-limit",
+      "status": "pass",
+      "durationMs": 0.9910999999999603,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.354Z"
+    },
+    {
+      "operation": "pdf.pdfa.export",
+      "fixture": "pdf/basic-a4.pdf::profile-2b-success",
+      "status": "pass",
+      "durationMs": 0.4241000000000099,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.355Z"
+    },
+    {
+      "operation": "pdf.pdfa.export",
+      "fixture": "pdf/basic-a4.pdf::profile-invalid",
+      "status": "pass",
+      "durationMs": 0.20879999999999654,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.355Z"
+    },
+    {
+      "operation": "pdf.pdfa.export",
+      "fixture": "pdf/basic-a4.pdf::runtime-unavailable",
+      "status": "pass",
+      "durationMs": 0.26380000000000337,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.355Z"
+    },
+    {
+      "operation": "pdf.metadata.batch",
+      "fixture": "pdf/basic-a4.pdf::metadata-valid",
+      "status": "pass",
+      "durationMs": 1.7975000000000136,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.357Z"
+    },
+    {
+      "operation": "pdf.metadata.batch",
+      "fixture": "pdf/basic-a4.pdf::metadata-invalid-title-length",
+      "status": "pass",
+      "durationMs": 0.6252999999999815,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.358Z"
+    },
+    {
+      "operation": "pdf.output.naming",
+      "fixture": "pdf/naming::collision-dedupe",
+      "status": "pass",
+      "durationMs": 0.7261999999999489,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.359Z"
+    },
+    {
+      "operation": "pdf.output.naming",
+      "fixture": "pdf/naming::missing-extension-template",
+      "status": "pass",
+      "durationMs": 0.137800000000027,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.359Z"
+    },
+    {
+      "operation": "pdf.protect.presets",
+      "fixture": "pdf/protect::preset-conflict",
+      "status": "pass",
+      "durationMs": 0.21659999999997126,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.359Z"
+    },
+    {
+      "operation": "pdf.protect.presets",
+      "fixture": "pdf/protect::invalid-permission-combo",
+      "status": "pass",
+      "durationMs": 0.05139999999994416,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.359Z"
+    },
+    {
+      "operation": "pdf.protect.presets",
+      "fixture": "pdf/unprotect::strategy-conflict",
+      "status": "pass",
+      "durationMs": 0.08830000000000382,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.359Z"
+    },
+    {
+      "operation": "pdf.header-footer.presets",
+      "fixture": "pdf/basic-a4.pdf::header-footer-confidential",
+      "status": "pass",
+      "durationMs": 4.140600000000006,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.363Z"
+    },
+    {
+      "operation": "pdf.header-footer.presets",
+      "fixture": "pdf/basic-a4.pdf::header-footer-custom-empty",
+      "status": "pass",
+      "durationMs": 0.9282000000000039,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.365Z"
+    },
+    {
+      "operation": "pdf.lock-unlock.policy",
+      "fixture": "pdf/security::balanced-too-short",
+      "status": "pass",
+      "durationMs": 0.14229999999997744,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.365Z"
+    },
+    {
+      "operation": "pdf.lock-unlock.policy",
+      "fixture": "pdf/security::balanced-missing-digit",
+      "status": "pass",
+      "durationMs": 0.11150000000003502,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.365Z"
+    },
+    {
+      "operation": "pdf.lock-unlock.policy",
+      "fixture": "pdf/security::strong-missing-symbol",
+      "status": "pass",
+      "durationMs": 0.08680000000003929,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.365Z"
+    },
+    {
+      "operation": "pdf.lock-unlock.policy",
+      "fixture": "pdf/security::strong-valid",
+      "status": "pass",
+      "durationMs": 0.060000000000002274,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.365Z"
+    },
+    {
+      "operation": "pdf.lock-unlock.policy",
+      "fixture": "pdf/security::confirm-mismatch",
+      "status": "pass",
+      "durationMs": 0.040300000000002,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.365Z"
+    },
+    {
+      "operation": "pdf.lock-unlock.policy",
+      "fixture": "pdf/security::unlock-password-required",
+      "status": "pass",
+      "durationMs": 0.06700000000000728,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.365Z"
+    },
+    {
+      "operation": "pdf.lock-unlock.policy",
+      "fixture": "pdf/security::unlock-incorrect-password",
+      "status": "pass",
+      "durationMs": 0.03149999999999409,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.365Z"
+    },
+    {
+      "operation": "pdf.lock-unlock.policy",
+      "fixture": "pdf/security::unlock-open-failed",
+      "status": "pass",
+      "durationMs": 0.021299999999996544,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.365Z"
+    },
+    {
+      "operation": "pdf.unlock.runtime",
+      "fixture": "pdf/security-runtime::password-required",
+      "status": "pass",
+      "durationMs": 0.6182999999999765,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.366Z"
+    },
+    {
+      "operation": "pdf.unlock.runtime",
+      "fixture": "pdf/security-runtime::incorrect-password",
+      "status": "pass",
+      "durationMs": 0.2606000000000108,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.366Z"
+    },
+    {
+      "operation": "pdf.unlock.runtime",
+      "fixture": "pdf/security-runtime::valid-password",
+      "status": "pass",
+      "durationMs": 39.12809999999996,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.405Z"
+    },
+    {
+      "operation": "pdf.repair.unlock-interaction",
+      "fixture": "pdf/repair-security::unlock-required-before-repair",
+      "status": "pass",
+      "durationMs": 0.5662000000000376,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.406Z"
+    },
+    {
+      "operation": "pdf.repair.unlock-interaction",
+      "fixture": "pdf/repair-security::unrecoverable-encrypted-classification",
+      "status": "pass",
+      "durationMs": 0.2744000000000142,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.406Z"
+    },
+    {
+      "operation": "pdf.ocr.pilot",
+      "fixture": "pdf/basic-a4.pdf",
+      "status": "pass",
+      "durationMs": 0.30970000000002074,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.407Z"
+    },
+    {
+      "operation": "content.office.reliability",
+      "fixture": "office/sample.docx",
+      "status": "pass",
+      "durationMs": 0.04970000000002983,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.407Z"
+    },
+    {
+      "operation": "content.office.reliability",
+      "fixture": "office/sample.pptx",
+      "status": "pass",
+      "durationMs": 0.012800000000027012,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.407Z"
+    },
+    {
+      "operation": "content.office.reliability",
+      "fixture": "office/sample.xlsx",
+      "status": "pass",
+      "durationMs": 0.010300000000029286,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.407Z"
+    },
+    {
+      "operation": "content.office.reliability",
+      "fixture": "office/legacy.doc",
+      "status": "pass",
+      "durationMs": 0.011800000000050659,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.407Z"
+    },
+    {
+      "operation": "content.office.reliability",
+      "fixture": "office/legacy.ppt",
+      "status": "pass",
+      "durationMs": 0.010699999999985721,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.407Z"
+    },
+    {
+      "operation": "content.office.reliability",
+      "fixture": "office/legacy.xls",
+      "status": "pass",
+      "durationMs": 0.010800000000017462,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.407Z"
+    },
+    {
+      "operation": "content.office.reliability",
+      "fixture": "office/odf.odt",
+      "status": "pass",
+      "durationMs": 0.010800000000017462,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.407Z"
+    },
+    {
+      "operation": "app.tier-a.route-smoke",
+      "fixture": "app/routes/pdf-route-resolution",
+      "status": "pass",
+      "durationMs": 0.19580000000001974,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.407Z"
+    },
+    {
+      "operation": "app.tier-a.route-smoke",
+      "fixture": "app/routes/selection-priority",
+      "status": "pass",
+      "durationMs": 0.05329999999997881,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.407Z"
+    },
+    {
+      "operation": "app.tier-a.route-smoke",
+      "fixture": "app/routes/drop-routing-mixed-bucket",
+      "status": "pass",
+      "durationMs": 0.1834999999999809,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.407Z"
+    },
+    {
+      "operation": "app.tier-a.route-smoke",
+      "fixture": "app/routes/app-pdf-entrypoint",
+      "status": "pass",
+      "durationMs": 0.4449000000000183,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.408Z"
+    },
+    {
+      "operation": "app.tier-a.route-smoke",
+      "fixture": "app/routes/pdf-tool-actions",
+      "status": "pass",
+      "durationMs": 0.3983000000000061,
+      "note": "ok",
+      "at": "2026-05-30T16:55:28.408Z"
+    }
+  ]
+}

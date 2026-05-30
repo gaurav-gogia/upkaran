@@ -10,6 +10,9 @@
         "build": "vite build",
         "preview": "npm run build && wrangler dev",
         "build:wasm": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-wasm.ps1",
+        "reliability:sample": "node ./scripts/reliability-sample-run.mjs",
+        "reliability:full": "npm run reliability:sample && npm run reliability:baseline",
+        "reliability:baseline": "node ./scripts/reliability-baseline.mjs",
         "deploy": "npm run build && wrangler deploy"
     },
     "devDependencies": {

@@ -147,7 +147,54 @@ export async function splitPdf(entry, options = {}, onProgress = () => {}) {
   const bytes = await entry.file.arrayBuffer();
   const source = await PDFDocument.load(bytes);
   const pageCount = source.getPageCount();
-  const mode = options.mode === "custom" ? "custom" : "per-page";
+  const mode = options.mode === "custom" || options.mode === "size" ? options.mode : "per-page";
+
+  if (mode === "size") {
+    const maxChunkMb = Number.parseFloat(options.maxChunkMb ?? "0");
+    if (!Number.isFinite(maxChunkMb) || maxChunkMb <= 0) {
+      throw new Error("Enter a split size greater than 0 MB.");
+    }
+
+    const maxBytes = Math.max(1, Math.floor(maxChunkMb * 1024 * 1024));
+    const sourceIndices = source.getPageIndices();
+    const results = [];
+    let currentIndices = [];
+
+    const buildChunk = async (indices) => {
+      const target = await PDFDocument.create();
+      const pages = await target.copyPages(source, indices);
+      pages.forEach((page) => target.addPage(page));
+      const outBytes = await target.save();
+      return new Blob([outBytes], { type: "application/pdf" });
+    };
+
+    for (let i = 0; i < sourceIndices.length; i += 1) {
+      const pageIndex = sourceIndices[i];
+      const candidate = [...currentIndices, pageIndex];
+      const candidateBlob = await buildChunk(candidate);
+
+      if (currentIndices.length > 0 && candidateBlob.size > maxBytes) {
+        const finalizedBlob = await buildChunk(currentIndices);
+        results.push(finalizedBlob);
+        currentIndices = [pageIndex];
+      } else {
+        currentIndices = candidate;
+      }
+
+      onProgress(Math.round(((i + 1) / sourceIndices.length) * 100));
+    }
+
+    if (currentIndices.length > 0) {
+      results.push(await buildChunk(currentIndices));
+    }
+
+    if (!results.length) {
+      throw new Error("No pages selected for splitting.");
+    }
+
+    return results;
+  }
+
   const ranges = mode === "custom"
     ? parseCustomRanges(options.selection ?? "", pageCount)
     : buildPerPageRanges(pageCount);
@@ -243,6 +290,41 @@ export async function rotatePdfPages(entry, selection, angle = 90, onProgress = 
   return new Blob([await doc.save()], { type: "application/pdf" });
 }
 
+export async function cropPdfPages(entry, options = {}, onProgress = () => {}) {
+  const bytes = await entry.file.arrayBuffer();
+  const doc = await PDFDocument.load(bytes);
+  const pageCount = doc.getPageCount();
+  const ranges = parseSelectionOrAll(options.selection ?? "", pageCount);
+  const indices = expandRangesToIndices(ranges, pageCount, { dedupe: true });
+
+  if (indices.length < 1) {
+    throw new Error("No pages selected for cropping.");
+  }
+
+  const marginTop = Math.max(0, Number.parseFloat(options.top ?? 0) || 0);
+  const marginRight = Math.max(0, Number.parseFloat(options.right ?? 0) || 0);
+  const marginBottom = Math.max(0, Number.parseFloat(options.bottom ?? 0) || 0);
+  const marginLeft = Math.max(0, Number.parseFloat(options.left ?? 0) || 0);
+
+  for (let i = 0; i < indices.length; i += 1) {
+    const page = doc.getPage(indices[i]);
+    const width = page.getWidth();
+    const height = page.getHeight();
+
+    const cropWidth = width - marginLeft - marginRight;
+    const cropHeight = height - marginTop - marginBottom;
+
+    if (cropWidth <= 2 || cropHeight <= 2) {
+      throw new Error("Crop margins are too large for at least one selected page.");
+    }
+
+    page.setCropBox(marginLeft, marginBottom, cropWidth, cropHeight);
+    onProgress(Math.round(((i + 1) / indices.length) * 100));
+  }
+
+  return new Blob([await doc.save()], { type: "application/pdf" });
+}
+
 function numberingPositionCoords(page, textWidth, fontSize, position, margin) {
   const width = page.getWidth();
   const height = page.getHeight();
@@ -313,6 +395,158 @@ export async function addPdfPageNumbers(entry, options = {}, onProgress = () => 
   return new Blob([await doc.save()], { type: "application/pdf" });
 }
 
+function sanitizeHeaderFooterText(value, label, maxLength = 120) {
+  const text = `${value ?? ""}`.trim();
+  if (!text) return "";
+  if (text.length > maxLength) {
+    throw new Error(`${label} is too long. Keep it under ${maxLength} characters.`);
+  }
+  return text;
+}
+
+function headerFooterPresetText(preset, options, pageIndex, totalPages) {
+  const date = new Date().toISOString().slice(0, 10);
+  const headerText = sanitizeHeaderFooterText(options.headerText, "Header text");
+  const footerText = sanitizeHeaderFooterText(options.footerText, "Footer text");
+
+  if (preset === "confidential") {
+    return {
+      header: "CONFIDENTIAL",
+      footer: `Page ${pageIndex + 1} of ${totalPages}`
+    };
+  }
+
+  if (preset === "page-date") {
+    return {
+      header: headerText || `${options.fileName || "Document"}`,
+      footer: `${date} • Page ${pageIndex + 1}`
+    };
+  }
+
+  if (preset === "custom") {
+    if (!headerText && !footerText) {
+      throw new Error("Custom header/footer preset requires header text or footer text.");
+    }
+    return {
+      header: headerText,
+      footer: footerText
+    };
+  }
+
+  return {
+    header: headerText || `${options.fileName || "Document"}`,
+    footer: footerText || `Page ${pageIndex + 1} of ${totalPages}`
+  };
+}
+
+export async function addPdfHeaderFooter(entry, options = {}, onProgress = () => {}) {
+  const bytes = await entry.file.arrayBuffer();
+  const doc = await PDFDocument.load(bytes);
+  const pageCount = doc.getPageCount();
+  const ranges = parseSelectionOrAll(options.selection ?? "", pageCount);
+  const indices = expandRangesToIndices(ranges, pageCount, { dedupe: true });
+  if (indices.length < 1) {
+    throw new Error("No pages selected for header/footer.");
+  }
+
+  const preset = `${options.preset || "standard"}`;
+  if (!["standard", "confidential", "page-date", "custom"].includes(preset)) {
+    throw new Error(`Unsupported header/footer preset: ${preset}.`);
+  }
+
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const fontSize = Math.min(18, Math.max(8, Number.parseInt(options.fontSize ?? "10", 10) || 10));
+  const margin = Math.min(120, Math.max(8, Number.parseInt(options.margin ?? "20", 10) || 20));
+  const color = rgb(0.2, 0.2, 0.2);
+
+  for (let i = 0; i < indices.length; i += 1) {
+    const page = doc.getPage(indices[i]);
+    const text = headerFooterPresetText(preset, {
+      headerText: options.headerText,
+      footerText: options.footerText,
+      fileName: entry.name
+    }, i, indices.length);
+
+    if (text.header) {
+      const w = font.widthOfTextAtSize(text.header, fontSize);
+      page.drawText(text.header, {
+        x: Math.max(margin, (page.getWidth() - w) / 2),
+        y: Math.max(margin, page.getHeight() - margin - fontSize),
+        size: fontSize,
+        font,
+        color
+      });
+    }
+
+    if (text.footer) {
+      const w = font.widthOfTextAtSize(text.footer, fontSize);
+      page.drawText(text.footer, {
+        x: Math.max(margin, (page.getWidth() - w) / 2),
+        y: margin,
+        size: fontSize,
+        font,
+        color
+      });
+    }
+
+    onProgress(Math.round(((i + 1) / indices.length) * 100));
+  }
+
+  return new Blob([await doc.save()], { type: "application/pdf" });
+}
+
+function normalizeMetadataField(value, label, maxLength = 256) {
+  const text = `${value ?? ""}`.trim();
+  if (!text) return "";
+  if (text.length > maxLength) {
+    throw new Error(`${label} is too long. Keep it under ${maxLength} characters.`);
+  }
+  return text;
+}
+
+function normalizeMetadataKeywords(value) {
+  const text = `${value ?? ""}`.trim();
+  if (!text) return [];
+
+  const tokens = text
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (tokens.length > 32) {
+    throw new Error("Too many keywords. Keep it to 32 or fewer.");
+  }
+
+  for (const token of tokens) {
+    if (token.length > 64) {
+      throw new Error("Each keyword must be 64 characters or fewer.");
+    }
+  }
+
+  return tokens;
+}
+
+export async function applyPdfMetadata(entry, metadata = {}, onProgress = () => {}) {
+  const bytes = await entry.file.arrayBuffer();
+  const doc = await PDFDocument.load(bytes);
+
+  const title = normalizeMetadataField(metadata.title, "Title");
+  const author = normalizeMetadataField(metadata.author, "Author");
+  const subject = normalizeMetadataField(metadata.subject, "Subject");
+  const keywords = normalizeMetadataKeywords(metadata.keywords);
+
+  onProgress(35);
+
+  doc.setTitle(title);
+  doc.setAuthor(author);
+  doc.setSubject(subject);
+  doc.setKeywords(keywords);
+
+  const out = await doc.save();
+  onProgress(100);
+  return new Blob([out], { type: "application/pdf" });
+}
+
 function clampNumber(value, min, max) {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, value));
@@ -341,6 +575,57 @@ function resolveImageExt(file) {
   if (name.endsWith(".png")) return "png";
   if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "jpg";
   return "";
+}
+
+function parseHexColor(value) {
+  const input = `${value || ""}`.trim();
+  const normalized = input.startsWith("#") ? input.slice(1) : input;
+
+  if (/^[0-9a-fA-F]{3}$/.test(normalized)) {
+    const r = Number.parseInt(`${normalized[0]}${normalized[0]}`, 16) / 255;
+    const g = Number.parseInt(`${normalized[1]}${normalized[1]}`, 16) / 255;
+    const b = Number.parseInt(`${normalized[2]}${normalized[2]}`, 16) / 255;
+    return rgb(r, g, b);
+  }
+
+  if (/^[0-9a-fA-F]{6}$/.test(normalized)) {
+    const r = Number.parseInt(normalized.slice(0, 2), 16) / 255;
+    const g = Number.parseInt(normalized.slice(2, 4), 16) / 255;
+    const b = Number.parseInt(normalized.slice(4, 6), 16) / 255;
+    return rgb(r, g, b);
+  }
+
+  return rgb(0.42, 0.42, 0.42);
+}
+
+function textWatermarkPositionCoords(page, textWidth, fontSize, position, margin) {
+  const width = page.getWidth();
+  const height = page.getHeight();
+
+  const leftX = margin;
+  const centerX = Math.max(margin, (width - textWidth) / 2);
+  const rightX = Math.max(margin, width - textWidth - margin);
+  const topY = Math.max(margin, height - fontSize - margin);
+  const middleY = Math.max(margin, (height - fontSize) / 2);
+  const bottomY = margin;
+
+  switch (position) {
+    case "top-left":
+      return { x: leftX, y: topY };
+    case "top-center":
+      return { x: centerX, y: topY };
+    case "top-right":
+      return { x: rightX, y: topY };
+    case "bottom-left":
+      return { x: leftX, y: bottomY };
+    case "bottom-right":
+      return { x: rightX, y: bottomY };
+    case "bottom-center":
+      return { x: centerX, y: bottomY };
+    case "center":
+    default:
+      return { x: centerX, y: middleY };
+  }
 }
 
 export async function addPdfImageWatermark(entry, imageFile, options = {}, onProgress = () => {}) {
@@ -411,6 +696,55 @@ export async function addPdfImageWatermark(entry, imageFile, options = {}, onPro
   return new Blob([await doc.save()], { type: "application/pdf" });
 }
 
+export async function addPdfTextWatermark(entry, options = {}, onProgress = () => {}) {
+  const label = `${options.text || ""}`.trim();
+  if (!label) {
+    throw new Error("Enter watermark text before applying.");
+  }
+
+  const pdfBytes = await entry.file.arrayBuffer();
+  const doc = await PDFDocument.load(pdfBytes);
+  const pageCount = doc.getPageCount();
+
+  const ranges = parseSelectionOrAll(options.selection ?? "", pageCount);
+  const indices = expandRangesToIndices(ranges, pageCount, { dedupe: true });
+  if (indices.length < 1) {
+    throw new Error("No pages selected for text watermark placement.");
+  }
+
+  const requestedFontSize = clampNumber(Number.parseFloat(options.fontSize ?? 40), 8, 240);
+  const opacity = clampNumber(Number.parseFloat(options.opacity ?? 0.25), 0, 1);
+  const rotation = parseImageRotation(options.rotation ?? -28);
+  const margin = clampNumber(Number.parseFloat(options.margin ?? 24), 0, 200);
+  const position = `${options.position || "center"}`;
+  const color = parseHexColor(options.colorHex ?? "#6b7280");
+  const font = await doc.embedFont(StandardFonts.HelveticaBold);
+
+  for (let i = 0; i < indices.length; i += 1) {
+    const page = doc.getPage(indices[i]);
+    const maxWidth = Math.max(20, page.getWidth() - margin * 2);
+    const measuredWidth = font.widthOfTextAtSize(label, requestedFontSize);
+    const scale = measuredWidth > maxWidth ? maxWidth / measuredWidth : 1;
+    const drawSize = requestedFontSize * scale;
+    const drawWidth = font.widthOfTextAtSize(label, drawSize);
+    const coords = textWatermarkPositionCoords(page, drawWidth, drawSize, position, margin);
+
+    page.drawText(label, {
+      x: coords.x,
+      y: coords.y,
+      size: drawSize,
+      font,
+      color,
+      opacity,
+      rotate: degrees(rotation)
+    });
+
+    onProgress(Math.round(((i + 1) / indices.length) * 100));
+  }
+
+  return new Blob([await doc.save()], { type: "application/pdf" });
+}
+
 export async function compressPdf(entry, _quality = 0.75, onProgress = () => {}) {
   onProgress(30);
   const bytes = await entry.file.arrayBuffer();
@@ -428,6 +762,50 @@ export async function compressPdf(entry, _quality = 0.75, onProgress = () => {})
   const compressed = await doc.save({ useObjectStreams: true, addDefaultPage: false });
   onProgress(100);
   return new Blob([compressed], { type: "application/pdf" });
+}
+
+const PDFA_PROFILES = new Set(["pdfa-1b", "pdfa-2b", "pdfa-3b"]);
+
+export async function exportPdfA(entry, options = {}, onProgress = () => {}, runtimeOptions = {}) {
+  const profile = `${options.profile || "pdfa-2b"}`.toLowerCase();
+  if (!PDFA_PROFILES.has(profile)) {
+    throw new Error(`Unsupported PDF/A profile: ${profile}.`);
+  }
+
+  const moduleLoader = typeof runtimeOptions?.moduleLoader === "function" ? runtimeOptions.moduleLoader : loadWasmModule;
+  const exportFn = typeof runtimeOptions?.exportFn === "function" ? runtimeOptions.exportFn : globalThis.wasmExportPDFA;
+
+  onProgress(10);
+  const bytes = new Uint8Array(await entry.file.arrayBuffer());
+  onProgress(35);
+
+  const mod = await moduleLoader("pdf");
+  if (!mod || typeof exportFn !== "function") {
+    const err = new Error(
+      "PDF/A export is not available in this build. Rebuild the PDF WASM module and refresh."
+    );
+    err.exportStatus = "limited";
+    err.exportCode = "pdfa_unavailable";
+    throw err;
+  }
+
+  let result;
+  try {
+    result = exportFn(bytes, profile);
+  } catch (e) {
+    throw new Error(`PDF/A export failed: ${e?.message ?? e}`);
+  }
+
+  if (result instanceof Error) {
+    throw new Error(`PDF/A export failed: ${result.message}`);
+  }
+
+  if (!(result instanceof Uint8Array)) {
+    throw new Error("PDF/A export produced unexpected output.");
+  }
+
+  onProgress(100);
+  return new Blob([result], { type: "application/pdf" });
 }
 
 export async function pdfToImages(entry, format = "png", onProgress = () => {}) {
@@ -540,23 +918,38 @@ export async function reorderPdfPages(entry, orderedPages, onProgress = () => {}
  * @param {(n: number) => void}   [onProgress]
  * @returns {Promise<Blob>}  Unlocked PDF blob
  */
-export async function unlockPdf(entry, password = "", onProgress = () => {}) {
+export async function unlockPdf(entry, password = "", onProgress = () => {}, options = {}) {
+  const forceRuntime = options?.forceRuntime === true;
+  const runtimeOverride = options?.runtime || null;
+  const createCanvas =
+    typeof options?.createCanvas === "function"
+      ? options.createCanvas
+      : () => {
+          if (typeof document === "undefined") {
+            throw new Error("Unlock runtime requires a browser canvas context.");
+          }
+          return document.createElement("canvas");
+        };
+  const fetchImpl = typeof options?.fetch === "function" ? options.fetch : fetch;
+
   const bytes = await entry.file.arrayBuffer();
 
   // ── Strategy 1: pdf-lib (owner-restricted or unprotected) ──────────────
-  try {
-    const doc = await PDFDocument.load(bytes);
-    onProgress(90);
-    const out = await doc.save();
-    onProgress(100);
-    return new Blob([out], { type: "application/pdf" });
-  } catch (e) {
-    // If pdf-lib fails for any reason other than password protection,
-    // still try the pdfjs path, which is more permissive.
+  if (!forceRuntime) {
+    try {
+      const doc = await PDFDocument.load(bytes);
+      onProgress(90);
+      const out = await doc.save();
+      onProgress(100);
+      return new Blob([out], { type: "application/pdf" });
+    } catch (e) {
+      // If pdf-lib fails for any reason other than password protection,
+      // still try the pdfjs path, which is more permissive.
+    }
   }
 
   // ── Strategy 2: pdfjs with password → render → re-create ───────────────
-  const { getDocument } = await getPdfRuntime();
+  const { getDocument } = runtimeOverride || (await getPdfRuntime());
   onProgress(5);
 
   const loadOptions = { data: new Uint8Array(bytes) };
@@ -582,16 +975,19 @@ export async function unlockPdf(entry, password = "", onProgress = () => {}) {
 
     const page = await pdf.getPage(pageNum);
     const viewport = page.getViewport({ scale: 2 });
-    const canvas = document.createElement("canvas");
+    const canvas = createCanvas();
     canvas.width = Math.floor(viewport.width);
     canvas.height = Math.floor(viewport.height);
     const ctx = canvas.getContext("2d", { alpha: false, colorSpace: "srgb" });
+    if (!ctx) {
+      throw new Error("Unlock runtime could not create a 2D canvas context.");
+    }
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     await page.render({ canvasContext: ctx, viewport }).promise;
 
     const pngDataUrl = canvas.toDataURL("image/png");
-    const pngResponse = await fetch(pngDataUrl);
+    const pngResponse = await fetchImpl(pngDataUrl);
     const pngBytes = await pngResponse.arrayBuffer();
     const pngImage = await newDoc.embedPng(pngBytes);
 
@@ -661,4 +1057,160 @@ export async function lockPdf(entry, password, onProgress = () => {}) {
 
   onProgress(100);
   return new Blob([result], { type: "application/pdf" });
+}
+
+/**
+ * Attempt to repair a potentially malformed PDF.
+ *
+ * Outcomes:
+ * - unchanged: input parses with pdf-lib, no structural recovery needed.
+ * - repaired: recovered by re-rendering pages via pdf.js into a fresh PDF.
+ * - unrecoverable: cannot be opened/recovered safely.
+ *
+ * @param {import("../js/detect.js").EnrichedFile} entry
+ * @param {(n: number) => void} [onProgress]
+ * @returns {Promise<{ blob: Blob, status: "unchanged" | "repaired", note: string, method: string }>}
+ */
+export async function repairPdf(entry, onProgress = () => {}, options = {}) {
+  const forceRuntime = options?.forceRuntime === true;
+  const runtimeOverride = options?.runtime || null;
+  const createCanvas =
+    typeof options?.createCanvas === "function"
+      ? options.createCanvas
+      : () => {
+          if (typeof document === "undefined") {
+            throw new Error("Repair runtime requires a browser canvas context.");
+          }
+          return document.createElement("canvas");
+        };
+  const fetchImpl = typeof options?.fetch === "function" ? options.fetch : fetch;
+
+  const bytes = await entry.file.arrayBuffer();
+
+  // Fast path: if pdf-lib can parse it, treat as structurally healthy.
+  if (!forceRuntime) {
+    try {
+      await PDFDocument.load(bytes);
+      onProgress(100);
+      return {
+        blob: new Blob([bytes], { type: "application/pdf" }),
+        status: "unchanged",
+        note: "No structural repair was required.",
+        method: "validation"
+      };
+    } catch {
+      // Continue to recovery path.
+    }
+  }
+
+  onProgress(10);
+
+  let getDocument;
+  try {
+    ({ getDocument } = runtimeOverride || (await getPdfRuntime()));
+  } catch (e) {
+    const err = new Error(`PDF recovery runtime unavailable: ${e?.message ?? e}`);
+    err.repairStatus = "unrecoverable";
+    throw err;
+  }
+  let pdf;
+  try {
+    pdf = await getDocument({ data: new Uint8Array(bytes) }).promise;
+  } catch (e) {
+    if (e && e.name === "PasswordException") {
+      const err = new Error("This PDF is password-protected. Unlock it first, then run repair.");
+      err.repairStatus = "unrecoverable";
+      throw err;
+    }
+    const err = new Error(`PDF could not be recovered: ${e?.message ?? e}`);
+    err.repairStatus = "unrecoverable";
+    throw err;
+  }
+
+  const repaired = await PDFDocument.create();
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
+    onProgress(Math.round(10 + (pageNum / Math.max(1, pdf.numPages)) * 80));
+
+    const page = await pdf.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = createCanvas();
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    const ctx = canvas.getContext("2d", { alpha: false, colorSpace: "srgb" });
+    if (!ctx) {
+      const err = new Error("Repair runtime could not create a 2D canvas context.");
+      err.repairStatus = "unrecoverable";
+      throw err;
+    }
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    const pngDataUrl = canvas.toDataURL("image/png");
+    const pngResponse = await fetchImpl(pngDataUrl);
+    const pngBytes = await pngResponse.arrayBuffer();
+    const pngImage = await repaired.embedPng(pngBytes);
+
+    const logicalWidth = viewport.width / 2;
+    const logicalHeight = viewport.height / 2;
+    const repairedPage = repaired.addPage([logicalWidth, logicalHeight]);
+    repairedPage.drawImage(pngImage, {
+      x: 0,
+      y: 0,
+      width: logicalWidth,
+      height: logicalHeight
+    });
+  }
+
+  onProgress(95);
+  const out = await repaired.save();
+  onProgress(100);
+
+  return {
+    blob: new Blob([out], { type: "application/pdf" }),
+    status: "repaired",
+    note: "Recovered by rasterizing pages into a clean PDF. Searchable text may be reduced.",
+    method: "raster-rebuild"
+  };
+}
+
+/**
+ * OCR pilot entrypoint.
+ *
+ * This function intentionally reports a limited status when an OCR engine is
+ * not bundled or not enabled, so users get explicit guidance instead of a
+ * silent failure.
+ */
+export async function ocrPdfPilot(entry, options = {}, onProgress = () => {}) {
+  const language = `${options.language || "eng"}`;
+  const strategy = `${options.strategy || "searchable-overlay"}`;
+
+  onProgress(8);
+  const bytes = await entry.file.arrayBuffer();
+
+  let pageCount = 0;
+  try {
+    const { getDocument } = await getPdfRuntime();
+    const pdf = await getDocument({ data: new Uint8Array(bytes) }).promise;
+    pageCount = pdf.numPages || 0;
+  } catch {
+    onProgress(100);
+    return {
+      status: "limited",
+      language,
+      strategy,
+      pageCount,
+      note: "OCR runtime is unavailable in this environment. The OCR pilot is currently disabled."
+    };
+  }
+
+  onProgress(100);
+  return {
+    status: "limited",
+    language,
+    strategy,
+    pageCount,
+    note: "OCR engine is not bundled in this build yet. Pilot entrypoint is active with explicit capability messaging."
+  };
 }

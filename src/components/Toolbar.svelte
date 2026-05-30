@@ -4,6 +4,7 @@
   export let route = "empty";
   export let processing = false;
   export let selectedCount = 0;
+  export let operationStatus = "idle";
 
   const dispatch = createEventDispatcher();
 
@@ -15,6 +16,15 @@
     file: "File tools",
     content: "Content tools",
     mixed: "Mixed files"
+  };
+
+  const statusLabels = {
+    idle: "Idle",
+    queued: "Queued",
+    running: "Running",
+    success: "Completed",
+    partial: "Completed (partial)",
+    failed: "Failed"
   };
 
   let clearingSecurely = false;
@@ -43,9 +53,9 @@
         <span></span><span></span><span></span>
       </span>
     {:else}
-      <span class="status-dot" aria-hidden="true"></span>
+      <span class="status-dot" class:status-failed={operationStatus === "failed"} class:status-partial={operationStatus === "partial"} aria-hidden="true"></span>
     {/if}
-      <p>{labels[route] ?? "Ready"}</p>
+      <p>{labels[route] ?? "Ready"} · {statusLabels[operationStatus] ?? "Idle"}</p>
     </div>
     <small>Selected: {selectedCount}</small>
   </div>
@@ -105,6 +115,16 @@
     background: var(--app-state-success, #1e8a4a);
     flex-shrink: 0;
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-state-success, #1e8a4a) 25%, transparent);
+  }
+
+  .status-dot.status-partial {
+    background: var(--md-sys-color-tertiary, #7a5800);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--md-sys-color-tertiary, #7a5800) 25%, transparent);
+  }
+
+  .status-dot.status-failed {
+    background: var(--md-sys-color-error, #b3261e);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--md-sys-color-error, #b3261e) 30%, transparent);
   }
 
   .spinner {

@@ -16,8 +16,11 @@
   let groupedFiles = [];
   let collapsedGroups = {};
   let collapseStateReady = false;
+  let isSingleFileLayout = false;
+  let compactMode = false;
 
   const COLLAPSE_STATE_KEY = "upkaran-filelist-collapsed-groups";
+  const COMPACT_MODE_KEY = "upkaran-filelist-compact-mode";
 
   onMount(() => {
     try {
@@ -27,6 +30,11 @@
         if (parsed && typeof parsed === "object") {
           collapsedGroups = parsed;
         }
+      }
+
+      const compactRaw = localStorage.getItem(COMPACT_MODE_KEY);
+      if (compactRaw === "1") {
+        compactMode = true;
       }
     } catch {
       // Ignore persisted state failures.
@@ -70,9 +78,12 @@
     collapsedGroups = next;
   }
 
+  $: isSingleFileLayout = groupedFiles.length === 1 && (groupedFiles[0]?.rows?.length || 0) === 1;
+
   $: if (collapseStateReady) {
     try {
       localStorage.setItem(COLLAPSE_STATE_KEY, JSON.stringify(collapsedGroups));
+      localStorage.setItem(COMPACT_MODE_KEY, compactMode ? "1" : "0");
     } catch {
       // Ignore persisted state failures.
     }
@@ -236,70 +247,79 @@
 </script>
 
 {#if files.length > 0}
-  <section class="panel list-wrap" aria-label="Loaded file board">
+  <section class="panel list-wrap" class:is-compact={compactMode} aria-label="Loaded file board">
     <header class="list-header">
       <div class="list-title-wrap">
-        <h3>Intake Board</h3>
+        <h3>Files</h3>
         <div class="list-metrics">
           <span class="metric-chip">Files <strong>{files.length}</strong></span>
           <span class="metric-chip">Selected <strong>{selectedIds.length}</strong></span>
         </div>
       </div>
-      <button class="secondary" type="button" disabled={busy} on:click={toggleAll}>
-        {selectedIds.length === files.length ? "Clear selection" : "Select all"}
-      </button>
+      <div class="list-actions">
+        <button class="secondary compact-toggle" type="button" on:click={() => (compactMode = !compactMode)} aria-pressed={compactMode}>
+          {compactMode ? "Comfortable" : "Compact"}
+        </button>
+        <button class="secondary" type="button" disabled={busy} on:click={toggleAll}>
+          {files.length === 1
+            ? (selectedIds.length === 1 ? "Deselect" : "Select")
+            : (selectedIds.length === files.length ? "Clear" : "Select all")}
+        </button>
+      </div>
     </header>
 
     <div class="group-stack" role="listbox" aria-multiselectable="true">
       {#each groupedFiles as group (group.tab)}
-        <section class="kind-group" aria-label={`${group.label} files`}>
-          <header class="kind-group-header">
-            <div class="kind-group-title">
-              <h4>{group.label}</h4>
-              <span>{group.count}</span>
-            </div>
-            <div class="kind-group-actions">
-              <button
-                class="secondary group-collapse-btn"
-                type="button"
-                disabled={busy}
-                aria-expanded={!collapsedGroups[group.tab]}
-                on:click={() => toggleGroupCollapse(group.tab)}
-              >
-                {collapsedGroups[group.tab] ? "Show" : "Hide"}
-              </button>
+        <section class="kind-group" class:kind-group-single={isSingleFileLayout} aria-label={`${group.label} files`}>
+          {#if !isSingleFileLayout}
+            <header class="kind-group-header">
+              <div class="kind-group-title">
+                <h4>{group.label}</h4>
+                <span>{group.count}</span>
+              </div>
+              <div class="kind-group-actions">
+                <button
+                  class="secondary group-collapse-btn"
+                  type="button"
+                  disabled={busy}
+                  aria-expanded={!collapsedGroups[group.tab]}
+                  on:click={() => toggleGroupCollapse(group.tab)}
+                >
+                  {collapsedGroups[group.tab] ? "Show" : "Hide"}
+                </button>
 
-              {#if group.rows.length > 1}
-                <details class="group-tools">
-                  <summary>Group tools</summary>
-                  <div class="group-tools-body">
-                    <label class="group-switcher" aria-label={`Choose active ${group.label} file`}>
-                      <span>Active file</span>
-                      <select
-                        value={activeGroupFileId(group.rows)}
-                        disabled={busy}
-                        on:change={(event) => focusGroupFile(event.currentTarget.value)}
-                      >
-                        {#each group.rows as row (row.item.id)}
-                          <option value={row.item.id}>{row.item.name}</option>
-                        {/each}
-                      </select>
-                    </label>
-                    <button class="secondary group-select-btn" type="button" disabled={busy} on:click={() => selectGroup(group.rows)}>
-                      Select group
-                    </button>
-                    {#if groupedFiles.length > 1}
-                      <button class="secondary group-focus-btn" type="button" disabled={busy} on:click={() => focusTypeGroup(group.tab, group.rows)}>
-                        Only this type
+                {#if group.rows.length > 1}
+                  <details class="group-tools">
+                    <summary>Group tools</summary>
+                    <div class="group-tools-body">
+                      <label class="group-switcher" aria-label={`Choose active ${group.label} file`}>
+                        <span>Active file</span>
+                        <select
+                          value={activeGroupFileId(group.rows)}
+                          disabled={busy}
+                          on:change={(event) => focusGroupFile(event.currentTarget.value)}
+                        >
+                          {#each group.rows as row (row.item.id)}
+                            <option value={row.item.id}>{row.item.name}</option>
+                          {/each}
+                        </select>
+                      </label>
+                      <button class="secondary group-select-btn" type="button" disabled={busy} on:click={() => selectGroup(group.rows)}>
+                        Select group
                       </button>
-                    {/if}
-                  </div>
-                </details>
-              {/if}
-            </div>
-          </header>
+                      {#if groupedFiles.length > 1}
+                        <button class="secondary group-focus-btn" type="button" disabled={busy} on:click={() => focusTypeGroup(group.tab, group.rows)}>
+                          Only this type
+                        </button>
+                      {/if}
+                    </div>
+                  </details>
+                {/if}
+              </div>
+            </header>
+          {/if}
 
-          {#if !collapsedGroups[group.tab]}
+          {#if isSingleFileLayout || !collapsedGroups[group.tab]}
             <ul class="file-list">
               {#each group.rows as row (row.item.id)}
                 <FileItem
@@ -307,6 +327,8 @@
                   index={row.index}
                   checked={selectedIds.includes(row.item.id)}
                   selected={selectedIds.includes(row.item.id)}
+                  showDragHandle={files.length > 1}
+                  compact={compactMode}
                   {busy}
                   on:toggle={(event) => toggleItem(event.detail)}
                   on:keynav={(event) => onKeyNav(event.detail)}
@@ -316,7 +338,7 @@
                   on:drop={(event) => reorderWithDrop(event.detail.id)}
                   on:dragend={() => (draggingId = "")}
                 >
-                  <span slot="trailing" class="size-chip">{row.item.kind.toUpperCase()} · {formatBytes(row.item.size)}</span>
+                  <span slot="trailing" class="size-chip">{compactMode || isSingleFileLayout ? formatBytes(row.item.size) : `${row.item.kind.toUpperCase()} · ${formatBytes(row.item.size)}`}</span>
                 </FileItem>
               {/each}
             </ul>
@@ -331,28 +353,41 @@
 
 <style>
   .list-wrap {
-    padding: 1.1rem;
+    padding: 0.8rem;
     overflow: hidden;
-    border: 1px solid var(--md-sys-color-outline-variant);
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 70%, transparent);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 96%, var(--md-sys-color-primary) 4%);
   }
 
   .list-header {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
-    margin-bottom: 0.9rem;
+    margin-bottom: 0.65rem;
     gap: 0.7rem;
+  }
+
+  .list-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.36rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .compact-toggle {
+    min-width: 5.8rem;
   }
 
   .list-title-wrap {
     display: grid;
-    gap: 0.42rem;
+    gap: 0.3rem;
   }
 
   .list-metrics {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
+    gap: 0.3rem;
   }
 
   .metric-chip {
@@ -360,13 +395,13 @@
     align-items: center;
     gap: 0.28rem;
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 4px;
-    padding: 0.2rem 0.5rem;
-    font-size: 0.72rem;
+    border-radius: 999px;
+    padding: 0.16rem 0.44rem;
+    font-size: 0.69rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--md-sys-color-on-surface-variant);
-    background: color-mix(in srgb, var(--md-sys-color-surface) 88%, var(--md-sys-color-primary) 12%);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 94%, var(--md-sys-color-primary) 6%);
   }
 
   .metric-chip strong {
@@ -376,9 +411,9 @@
 
   h3 {
     margin: 0;
-    font-size: 1.04rem;
+    font-size: 0.98rem;
     font-weight: 700;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.01em;
   }
 
   span {
@@ -390,28 +425,51 @@
     margin: 0;
     padding: 0;
     display: grid;
-    gap: 0.52rem;
+    gap: 0.44rem;
+  }
+
+  .list-wrap.is-compact .file-list {
+    gap: 0.28rem;
   }
 
   .group-stack {
     display: grid;
-    gap: 0.72rem;
+    gap: 0.6rem;
+  }
+
+  .list-wrap.is-compact .group-stack {
+    gap: 0.4rem;
   }
 
   .kind-group {
-    border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 12px;
-    padding: 0.56rem;
-    background: color-mix(in srgb, var(--md-sys-color-surface) 94%, var(--md-sys-color-primary) 6%);
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 70%, transparent);
+    border-radius: 10px;
+    padding: 0.46rem;
+    background: color-mix(in srgb, var(--md-sys-color-surface) 97%, var(--md-sys-color-primary) 3%);
+  }
+
+  .list-wrap.is-compact .kind-group {
+    padding: 0.32rem;
+    border-radius: 8px;
+  }
+
+  .kind-group.kind-group-single {
+    border: none;
+    background: transparent;
+    padding: 0;
   }
 
   .kind-group-header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    margin-bottom: 0.55rem;
+    margin-bottom: 0.42rem;
     gap: 0.6rem;
     flex-wrap: wrap;
+  }
+
+  .list-wrap.is-compact .kind-group-header {
+    margin-bottom: 0.3rem;
   }
 
   .kind-group-title {
@@ -423,7 +481,7 @@
 
   .kind-group-header h4 {
     margin: 0;
-    font-size: 0.78rem;
+    font-size: 0.74rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--md-sys-color-on-surface-variant);
@@ -431,19 +489,19 @@
 
   .kind-group-header span {
     min-width: 1.5rem;
-    height: 1.2rem;
+    height: 1.1rem;
     border-radius: 999px;
     border: 1px solid var(--md-sys-color-outline-variant);
     display: inline-grid;
     place-items: center;
-    font-size: 0.72rem;
+    font-size: 0.68rem;
     color: var(--md-sys-color-on-surface-variant);
   }
 
   .kind-group-actions {
     display: inline-flex;
     align-items: flex-start;
-    gap: 0.4rem;
+    gap: 0.3rem;
     flex-wrap: wrap;
     justify-content: flex-end;
     margin-left: auto;
@@ -451,15 +509,15 @@
 
   .group-tools {
     border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: 999px;
-    padding: 0.12rem 0.45rem;
+    border-radius: 10px;
+    padding: 0.08rem 0.4rem;
     background: var(--md-sys-color-surface);
   }
 
   .group-tools > summary {
     list-style: none;
     cursor: pointer;
-    font-size: 0.66rem;
+    font-size: 0.64rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--md-sys-color-on-surface-variant);
@@ -472,7 +530,7 @@
 
   .group-tools[open] {
     border-radius: var(--app-radius-sm, 12px);
-    padding: 0.42rem;
+    padding: 0.36rem;
     min-width: min(100%, 260px);
   }
 
@@ -529,7 +587,7 @@
 
   .group-collapsed-note {
     margin: 0;
-    font-size: 0.76rem;
+    font-size: 0.72rem;
     color: var(--md-sys-color-on-surface-variant);
     padding: 0.2rem 0.1rem;
   }
@@ -537,12 +595,12 @@
   .size-chip {
     display: inline-flex;
     align-items: center;
-    border-radius: 3px;
+    border-radius: 999px;
     background: var(--md-sys-color-surface-container-highest);
     border: 1px solid var(--md-sys-color-outline-variant);
     color: var(--md-sys-color-on-surface-variant);
-    padding: 0.2rem 0.55rem;
-    font-size: 0.7rem;
+    padding: 0.18rem 0.5rem;
+    font-size: 0.67rem;
     text-transform: none;
     letter-spacing: 0.01em;
     max-width: 100%;
@@ -551,10 +609,20 @@
     text-overflow: ellipsis;
   }
 
+  .list-wrap.is-compact .size-chip {
+    padding: 0.12rem 0.42rem;
+    font-size: 0.62rem;
+  }
+
   @media (max-width: 740px) {
     .list-header {
       flex-direction: column;
       align-items: flex-start;
+    }
+
+    .list-actions {
+      width: 100%;
+      justify-content: flex-start;
     }
 
     .kind-group-actions {

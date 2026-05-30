@@ -1,0 +1,198 @@
+{
+  "generatedAt": "2026-05-30T16:55:29.259Z",
+  "overview": {
+    "operationCount": 17,
+    "totalChecks": 51,
+    "totalPassRate": 1,
+    "globalP95Ms": 22.195600000000013
+  },
+  "operations": [
+    {
+      "id": "pdf.watermark.image",
+      "title": "PDF image watermark",
+      "tier": "A",
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 16.324000000000012,
+      "fixturesExpected": 2
+    },
+    {
+      "id": "pdf.watermark.text",
+      "title": "PDF text watermark",
+      "tier": "A",
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 22.195600000000013,
+      "fixturesExpected": 2
+    },
+    {
+      "id": "pdf.repair",
+      "title": "PDF repair",
+      "tier": "A",
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 30.6669,
+      "fixturesExpected": 2
+    },
+    {
+      "id": "pdf.crop",
+      "title": "PDF crop",
+      "tier": "A",
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 2.361499999999978,
+      "fixturesExpected": 2
+    },
+    {
+      "id": "pdf.reorder",
+      "title": "PDF reorder",
+      "tier": "A",
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 4.779899999999998,
+      "fixturesExpected": 3
+    },
+    {
+      "id": "pdf.split.size",
+      "title": "PDF split by size",
+      "tier": "B",
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 6.4103000000000065,
+      "fixturesExpected": 2
+    },
+    {
+      "id": "pdf.pdfa.export",
+      "title": "PDF/A export",
+      "tier": "B",
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 0.4241000000000099,
+      "fixturesExpected": 3
+    },
+    {
+      "id": "pdf.metadata.batch",
+      "title": "PDF metadata batch",
+      "tier": "B",
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 1.7975000000000136,
+      "fixturesExpected": 2
+    },
+    {
+      "id": "pdf.output.naming",
+      "title": "PDF output naming",
+      "tier": "B",
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 0.7261999999999489,
+      "fixturesExpected": 2
+    },
+    {
+      "id": "pdf.protect.presets",
+      "title": "PDF protect presets",
+      "tier": "B",
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 0.21659999999997126,
+      "fixturesExpected": 3
+    },
+    {
+      "id": "pdf.header-footer.presets",
+      "title": "PDF header/footer presets",
+      "tier": "B",
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 4.140600000000006,
+      "fixturesExpected": 2
+    },
+    {
+      "id": "pdf.lock-unlock.policy",
+      "title": "PDF lock/unlock policy",
+      "tier": "A",
+      "total": 8,
+      "passed": 8,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 0.14229999999997744,
+      "fixturesExpected": 8
+    },
+    {
+      "id": "pdf.unlock.runtime",
+      "title": "PDF unlock runtime",
+      "tier": "A",
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 39.12809999999996,
+      "fixturesExpected": 3
+    },
+    {
+      "id": "pdf.repair.unlock-interaction",
+      "title": "PDF repair unlock interaction",
+      "tier": "A",
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 0.5662000000000376,
+      "fixturesExpected": 2
+    },
+    {
+      "id": "pdf.ocr.pilot",
+      "title": "PDF OCR pilot",
+      "tier": "A",
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 0.30970000000002074,
+      "fixturesExpected": 1
+    },
+    {
+      "id": "content.office.reliability",
+      "title": "Office conversion reliability",
+      "tier": "B",
+      "total": 7,
+      "passed": 7,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 0.04970000000002983,
+      "fixturesExpected": 7
+    },
+    {
+      "id": "app.tier-a.route-smoke",
+      "title": "Tier A route smoke",
+      "tier": "A",
+      "total": 5,
+      "passed": 5,
+      "failed": 0,
+      "passRate": 1,
+      "p95Ms": 0.4449000000000183,
+      "fixturesExpected": 5
+    }
+  ]
+}

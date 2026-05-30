@@ -1,6 +1,7 @@
 <script>
   import { createEventDispatcher, onDestroy } from "svelte";
-  import { fileToHtml, getExtension } from "../js/document-tools.js";
+  import { fileToHtml, getExtension, urlToHtml } from "../js/document-tools.js";
+  import { summarizeOfficeOutcomes } from "../js/office-reliability.js";
   import { htmlStringToMultiPagePdf } from "../js/workspace-pdf.js";
   import { formatBytes, kindLabel } from "../js/detect.js";
 
@@ -16,6 +17,16 @@
   let previewLoading = false;
   let previewFile = null;
   let previewDebounce;
+  let previewRequestId = 0;
+  let sourceUrl = "";
+  let urlPreviewHtml = "";
+  let urlPreviewLoading = false;
+  let urlPreviewError = "";
+  let urlPreviewSource = "";
+  let urlPreviewDebounce;
+  let urlPreviewRequestId = 0;
+  let conversionSummary = { total: 0, success: 0, unsupported: 0, error: 0, passRate: 0 };
+  let conversionOutcomes = [];
 
   // ── File-type metadata ───────────────────────────────────────────────────
 
@@ -48,6 +59,7 @@
 
   $: if (primaryFile && primaryFile !== previewFile && !unsupportedMsg) {
     clearTimeout(previewDebounce);
+    previewHtml = "";
     previewDebounce = setTimeout(() => loadPreview(primaryFile), 80);
   }
 
@@ -57,20 +69,96 @@
     error = "";
   }
 
+  $: if (!sourceUrl.trim()) {
+    clearTimeout(urlPreviewDebounce);
+    urlPreviewHtml = "";
+    urlPreviewError = "";
+    urlPreviewLoading = false;
+    urlPreviewSource = "";
+  } else if (sourceUrl.trim() !== urlPreviewSource) {
+    urlPreviewHtml = "";
+    urlPreviewError = "";
+  }
+
   onDestroy(() => clearTimeout(previewDebounce));
+  onDestroy(() => clearTimeout(urlPreviewDebounce));
 
   async function loadPreview(entry) {
-    if (previewLoading) return;
+    const requestId = ++previewRequestId;
     previewLoading = true;
     error = "";
     previewFile = entry;
     try {
-      previewHtml = await fileToHtml(entry);
+      const html = await fileToHtml(entry);
+      if (requestId !== previewRequestId) return;
+      previewHtml = html;
     } catch (e) {
+      if (requestId !== previewRequestId) return;
       error = `Preview error: ${e.message}`;
       previewHtml = "";
     } finally {
-      previewLoading = false;
+      if (requestId === previewRequestId) {
+        previewLoading = false;
+      }
+    }
+  }
+
+  async function loadUrlPreview() {
+    const rawUrl = sourceUrl.trim();
+    if (!rawUrl) {
+      urlPreviewError = "Enter a URL before previewing.";
+      urlPreviewHtml = "";
+      return;
+    }
+
+    const requestId = ++urlPreviewRequestId;
+    urlPreviewLoading = true;
+    urlPreviewError = "";
+
+    try {
+      const html = await urlToHtml(rawUrl);
+      if (requestId !== urlPreviewRequestId) return;
+      urlPreviewHtml = html;
+      urlPreviewSource = rawUrl;
+    } catch (e) {
+      if (requestId !== urlPreviewRequestId) return;
+      urlPreviewError = `URL preview error: ${e.message}`;
+      urlPreviewHtml = "";
+      urlPreviewSource = "";
+    } finally {
+      if (requestId === urlPreviewRequestId) {
+        urlPreviewLoading = false;
+      }
+    }
+  }
+
+  async function convertUrlToPdf() {
+    if (converting || busy) return;
+
+    const rawUrl = sourceUrl.trim();
+    if (!rawUrl) {
+      error = "Enter a URL before converting.";
+      return;
+    }
+
+    converting = true;
+    error = "";
+    dispatch("processing", true);
+    dispatch("progress", 5);
+
+    try {
+      const html = urlPreviewHtml && !urlPreviewError && urlPreviewSource === rawUrl
+        ? urlPreviewHtml
+        : await urlToHtml(rawUrl);
+      const pdfBlob = await htmlStringToMultiPagePdf(html);
+      dispatch("output", [{ name: `${makeUrlBaseName(rawUrl)}.pdf`, blob: pdfBlob }]);
+      dispatch("progress", 100);
+    } catch (e) {
+      error = e.message || "URL conversion failed.";
+      dispatch("error", error);
+    } finally {
+      converting = false;
+      dispatch("processing", false);
     }
   }
 
@@ -85,23 +173,45 @@
 
     try {
       const outputs = [];
+      const outcomes = [];
 
       for (let i = 0; i < files.length; i++) {
         const entry = files[i];
-        if (getUnsupportedMsg(entry.name)) continue;
+        const unsupported = getUnsupportedMsg(entry.name);
+        if (unsupported) {
+          outcomes.push({ fileName: entry.name, status: "unsupported", reason: unsupported });
+          dispatch("progress", Math.round(5 + ((i + 1) / files.length) * 90));
+          continue;
+        }
 
-        const html = await fileToHtml(entry);
-        const pdfBlob = await htmlStringToMultiPagePdf(html);
-        const baseName = entry.name.replace(/\.[^.]+$/, "");
-        outputs.push({ name: `${baseName}.pdf`, blob: pdfBlob });
+        try {
+          const html = await fileToHtml(entry);
+          const pdfBlob = await htmlStringToMultiPagePdf(html);
+          const baseName = entry.name.replace(/\.[^.]+$/, "");
+          outputs.push({ name: `${baseName}.pdf`, blob: pdfBlob });
+          outcomes.push({ fileName: entry.name, status: "success" });
+        } catch (convertError) {
+          outcomes.push({
+            fileName: entry.name,
+            status: "error",
+            reason: convertError?.message || "Conversion failed"
+          });
+        }
 
         dispatch("progress", Math.round(5 + ((i + 1) / files.length) * 90));
       }
 
+      conversionOutcomes = outcomes;
+      conversionSummary = summarizeOfficeOutcomes(outcomes);
+
       if (outputs.length) {
         dispatch("output", outputs);
         dispatch("progress", 100);
-      } else {
+      }
+
+      if (conversionSummary.error > 0) {
+        error = `${conversionSummary.error} file${conversionSummary.error === 1 ? "" : "s"} failed to convert.`;
+      } else if (outputs.length < 1) {
         error = "No supported files to convert.";
       }
     } catch (e) {
@@ -110,6 +220,22 @@
     } finally {
       converting = false;
       dispatch("processing", false);
+    }
+  }
+
+  function makeUrlBaseName(urlInput) {
+    try {
+      const normalized = /^https?:\/\//i.test(urlInput) ? urlInput : `https://${urlInput}`;
+      const resolved = new URL(normalized);
+      const pathParts = resolved.pathname.split("/").filter(Boolean);
+      const leaf = pathParts[pathParts.length - 1] || resolved.hostname;
+      const cleaned = `${leaf}`
+        .replace(/\.[^.]+$/, "")
+        .replace(/[^a-z0-9_-]+/gi, "-")
+        .replace(/^-+|-+$/g, "");
+      return cleaned || resolved.hostname || "webpage";
+    } catch {
+      return "webpage";
     }
   }
 </script>
@@ -127,6 +253,51 @@
     <span class="meta-chip">Primary file <strong>{primaryFile?.name ?? "No file selected"}</strong></span>
     <span class="meta-chip">Status <strong>{files.every((f) => !!getUnsupportedMsg(f.name)) && files.length > 0 ? "Needs supported format" : "Ready"}</strong></span>
   </div>
+
+  <section class="compact-section url-section">
+    <div class="section-title">Import from URL</div>
+    <p class="url-note">Fetch a public http or https page, inspect a static snapshot, then convert it to PDF. Sites that block cross-origin requests may refuse to load here.</p>
+
+    <label for="content-url">Webpage URL</label>
+    <input
+      id="content-url"
+      type="url"
+      bind:value={sourceUrl}
+      placeholder="https://example.com/article"
+      autocomplete="off"
+      spellcheck="false"
+      disabled={busy || converting}
+      on:keydown={(e) => e.key === "Enter" && loadUrlPreview()}
+    />
+
+    <div class="actions url-actions">
+      <button class="secondary" type="button" on:click={loadUrlPreview} disabled={busy || converting || !sourceUrl.trim()}>
+        {urlPreviewLoading ? "Loading preview…" : "Preview URL"}
+      </button>
+      <button type="button" on:click={convertUrlToPdf} disabled={busy || converting || !sourceUrl.trim()}>
+        {converting ? "Converting…" : "Convert URL to PDF"}
+      </button>
+    </div>
+
+    {#if urlPreviewError}
+      <p class="tool-error">{urlPreviewError}</p>
+    {/if}
+
+    {#if urlPreviewHtml}
+      <div class="preview-wrap url-preview-wrap">
+        <div class="preview-label">
+          <span>URL preview — {sourceUrl}</span>
+          {#if urlPreviewLoading}<span class="loading-text">Rendering…</span>{/if}
+        </div>
+        <iframe
+          class="preview-frame"
+          srcdoc={urlPreviewHtml}
+          title="URL preview"
+          sandbox="allow-same-origin"
+        ></iframe>
+      </div>
+    {/if}
+  </section>
 
   <!-- File list summary -->
   {#if files.length > 0}
@@ -184,6 +355,15 @@
   <!-- Error -->
   {#if error}
     <p class="tool-error">{error}</p>
+  {/if}
+
+  {#if conversionSummary.total > 0}
+    <div class="conversion-summary" role="status" aria-live="polite">
+      <span class="meta-chip">Converted <strong>{conversionSummary.success}</strong></span>
+      <span class="meta-chip">Unsupported <strong>{conversionSummary.unsupported}</strong></span>
+      <span class="meta-chip">Failed <strong>{conversionSummary.error}</strong></span>
+      <span class="meta-chip">Pass rate <strong>{Math.round(conversionSummary.passRate * 100)}%</strong></span>
+    </div>
   {/if}
 
   <!-- Actions -->
@@ -433,6 +613,41 @@
     margin-bottom: 0.2rem;
   }
 
+  .url-section {
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  .section-title {
+    font-size: 0.77rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--md-sys-color-on-surface-variant);
+  }
+
+  .url-note {
+    margin: 0;
+    color: var(--md-sys-color-on-surface-variant);
+    line-height: 1.4;
+  }
+
+  .url-actions {
+    margin-top: 0.15rem;
+  }
+
+  input[type="url"] {
+    width: 100%;
+    border-radius: var(--app-radius-sm, 12px);
+    border: 1px solid var(--md-sys-color-outline);
+    padding: 0.5rem 0.65rem;
+    background: var(--md-sys-color-surface);
+  }
+
+  .url-preview-wrap {
+    margin-top: 0.2rem;
+  }
+
   .ops-primary {
     padding: 0.25rem;
     border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 20%, var(--md-sys-color-outline-variant));
@@ -444,5 +659,12 @@
     font-size: 0.75rem;
     color: var(--md-sys-color-on-surface-variant);
     margin-top: 0.45rem !important;
+  }
+
+  .conversion-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin: -0.1rem 0 0.15rem;
   }
 </style>

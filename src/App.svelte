@@ -17,6 +17,7 @@
   import ForensicsDrawer from "./components/ForensicsDrawer.svelte";
   import ResultsDrawer from "./components/ResultsDrawer.svelte";
   import TextDiffWorkspace from "./components/TextDiffWorkspace.svelte";
+  import FeaturesShowcase from "./components/FeaturesShowcase.svelte";
   import { resolveRouteFromSelection, resolveRoute, resolveTypeTabs, routeToTypeTab, routeWorkspaceTitle, ROUTES } from "./routes/router.js";
   import { enrichFiles, kindLabel, mapKindToTypeTab, typeTabLabel } from "./js/detect.js";
   import { saveMany } from "./js/download.js";
@@ -33,6 +34,16 @@
   import { createPwaInstallController } from "./js/pwa-install.js";
   import { secureClearLocalAppData } from "./js/secure-local-data.js";
   import { addOperationLineage } from "./js/operation-lineage.js";
+  import {
+    OPERATION_STATUS,
+    activeOperation,
+    beginOperation,
+    completeOperation,
+    failOperation,
+    resetOperation,
+    updateOperationProgress
+  } from "./js/operation-state.js";
+  import { FEATURE_GROUPS } from "./js/features-catalog.js";
 
   let entries = [];
   let selectedFiles = [];
@@ -61,8 +72,29 @@
   let processing = false;
   let progress = 0;
   let error = "";
+  resetOperation();
   let resultsBatch = 0;
 
+
+  function onProcessing(event) {
+    const next = !!event.detail;
+    processing = next;
+
+    if (next) {
+      beginOperation({
+        route,
+        fileCount: effectiveFiles.length
+      });
+      return;
+    }
+
+    if ($activeOperation.status === OPERATION_STATUS.RUNNING || $activeOperation.status === OPERATION_STATUS.QUEUED) {
+      completeOperation({
+        status: OPERATION_STATUS.PARTIAL,
+        outputCount: 0
+      });
+    }
+  }
   // ── Toast system ──────────────────────────────────────────────────────
   let toasts = [];
   let _toastId = 0;
@@ -128,6 +160,11 @@
   let p2pMode = "send";
   let p2pPanelRef;
   let workspaceSheetRef;
+  const APP_VIEWS = {
+    WORKSPACE: "workspace",
+    SHOWCASE: "showcase"
+  };
+  let appView = APP_VIEWS.WORKSPACE;
 
   let recentActivity = [];
   let recentLastTool = "";
@@ -253,6 +290,78 @@
     dropzoneRef?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  function readViewFromHash() {
+    if (typeof window === "undefined") return APP_VIEWS.WORKSPACE;
+    return (window.location.hash || "").toLowerCase() === "#/showcase"
+      ? APP_VIEWS.SHOWCASE
+      : APP_VIEWS.WORKSPACE;
+  }
+
+  function setAppView(nextView, { updateHash = true } = {}) {
+    appView = nextView === APP_VIEWS.SHOWCASE ? APP_VIEWS.SHOWCASE : APP_VIEWS.WORKSPACE;
+    if (!updateHash || typeof window === "undefined") return;
+
+    const targetHash = appView === APP_VIEWS.SHOWCASE ? "#/showcase" : "#/";
+    if ((window.location.hash || "") !== targetHash) {
+      window.location.hash = targetHash;
+    }
+  }
+
+  function syncViewFromHash() {
+    setAppView(readViewFromHash(), { updateHash: false });
+  }
+
+  async function onShowcaseAction(event) {
+    const detail = event.detail || {};
+    setAppView(APP_VIEWS.WORKSPACE);
+
+    const openWorkspaceTab = async (tab) => {
+      workspaceControlsOpen = true;
+      topViewTab = tab;
+      await tick();
+      workspaceSheetRef?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+
+    if (detail.type === "picker") {
+      pickerAccept = detail.accept || "";
+      await tick();
+      dropzoneRef?.openPicker();
+      return;
+    }
+
+    if (detail.type === "p2p") {
+      p2pOpen = true;
+      await tick();
+      scrollToP2P();
+      return;
+    }
+
+    if (detail.type === "textdiff") {
+      await openWorkspaceTab("textdiff");
+      return;
+    }
+
+    if (detail.type === "history") {
+      await openWorkspaceTab("activity");
+      return;
+    }
+
+    if (detail.type === "performance") {
+      await openWorkspaceTab("performance");
+      return;
+    }
+
+    if (detail.type === "create") {
+      const editor = detail.editor;
+      if (editor === "latex" || editor === "mermaid" || editor === "plantuml") {
+        workspaceControlsOpen = true;
+        activeEditor = editor;
+        await tick();
+        scrollToFiles();
+      }
+    }
+  }
+
   function openIntakeModal() {
     intakeModalOpen = true;
     intakeCollapsed = true;
@@ -270,6 +379,8 @@
   }
 
   onMount(() => {
+    syncViewFromHash();
+
     try {
       const storedTheme = localStorage.getItem("upkaran-theme");
       if (THEME_OPTIONS.some((opt) => opt.value === storedTheme)) {
@@ -298,6 +409,12 @@
     applyAppearance();
 
     const onGlobalKeydown = (event) => {
+      if (event.key === "Escape" && appView === APP_VIEWS.SHOWCASE) {
+        event.preventDefault();
+        setAppView(APP_VIEWS.WORKSPACE);
+        return;
+      }
+
       if (event.key === "Escape" && intakeModalOpen) {
         event.preventDefault();
         closeIntakeModal();
@@ -328,10 +445,12 @@
     };
 
     window.addEventListener("keydown", onGlobalKeydown);
+    window.addEventListener("hashchange", syncViewFromHash);
 
     return () => {
       unsubscribeInstall?.();
       window.removeEventListener("keydown", onGlobalKeydown);
+      window.removeEventListener("hashchange", syncViewFromHash);
       pwaControllerRef?.dispose();
       pwaControllerRef = null;
     };
@@ -349,95 +468,7 @@
     recentLastTool = route;
   }
 
-  const featureGroups = [
-    {
-      title: "PDF",
-      pickerAccept: ".pdf,application/pdf",
-      cta: "Try PDF tools",
-      items: [
-        "Merge PDFs with drag reorder",
-        "Split per page or custom groups",
-        "Extract pages by range",
-        "Remove pages by range",
-        "Rotate selected pages",
-        "Add page numbers",
-        "Compress PDF",
-        "PDF to images",
-        "PDF to DjVu",
-        "Unlock / remove PDF restrictions",
-        "Lock PDF with password"
-      ]
-    },
-    {
-      title: "Images",
-      pickerAccept: "image/*,.heic,.heif",
-      cta: "Try Image tools",
-      items: [
-        "Compress selected images",
-        "Convert format (PNG/JPEG/WebP/AVIF)",
-        "Images to DjVu",
-        "Interactive crop with resize handles",
-        "Batch crop using normalized selection",
-        "Supports common formats including HEIC"
-      ]
-    },
-    {
-      title: "DjVu",
-      pickerAccept: ".djvu,image/vnd.djvu,application/vnd.djvu,application/x-djvu",
-      cta: "Try DjVu tools",
-      items: [
-        "DjVu to PDF",
-        "DjVu to images",
-        "Fully in-browser conversion"
-      ]
-    },
-    {
-      title: "Content → PDF",
-      pickerAccept: ".txt,.rtf,.md,.docx,.pptx,.xlsx,.csv,.tsv,.json,.yaml,.yml,.xml,.html,.htm,.js,.ts,.py,.go,.java,.rb,.rs,.c,.cpp,.h,.sh,.css,.sql",
-      cta: "Try Content tools",
-      items: [
-        "DOCX, PPTX, XLSX → PDF",
-        "TXT, RTF, Markdown → PDF",
-        "CSV / TSV table → PDF",
-        "JSON, YAML, XML → PDF",
-        "Source code with syntax highlighting → PDF",
-        "HTML / SVG → PDF"
-      ]
-    },
-    {
-      title: "Files",
-      pickerAccept: "",
-      cta: "Try File tools",
-      items: [
-        "GZIP single file",
-        "ZIP batch",
-        "TAR batch"
-      ]
-    },
-    {
-      title: "P2P Transfer",
-      pickerAccept: "",
-      cta: "Open P2P Transfer",
-      p2pCta: true,
-      items: [
-        "Browser-to-browser file bytes (no file upload server)",
-        "8-character quick connect code + QR/token fallback",
-        "Chunked transfer with SHA-256 verify",
-        "Works on the same local network"
-      ]
-    },
-    {
-      title: "Workflow",
-      pickerAccept: "",
-      cta: "Start now",
-      items: [
-        "Multi-select with shift range",
-        "Drag reorder in file list",
-        "Mixed selection modal",
-        "Offline processing in browser"
-      ]
-    }
-  ];
+  const featureGroups = FEATURE_GROUPS;
 
   $: availableTypeTabs = resolveTypeTabs(entries);
   $: {
@@ -542,14 +573,23 @@
       modalSelectedIds = dropDecision.selectedEntries.map((entry) => entry.id);
       modalError = "";
       mixedModalOpen = false;
+      activeTypeTab = routeToTypeTab(dropDecision.route);
       showToast({
         message: `Auto-selected ${dropDecision.selectedEntries.length} ${dropDecision.route} file(s) from mixed drop`,
         type: "success"
       });
+    } else if (dropDecision.route !== ROUTES.MIXED) {
+      // For single-type drops, select all immediately so workspace tools are visible right away.
+      selectedFiles = enriched;
+      modalSelectedIds = enriched.map((entry) => entry.id);
+      modalError = "";
+      mixedModalOpen = false;
+      activeTypeTab = routeToTypeTab(dropDecision.route);
     } else {
       selectedFiles = [];
       modalSelectedIds = [];
       modalError = "";
+      activeTypeTab = "";
     }
 
     const summary = summarizeEntriesForHistory(enriched);
@@ -812,6 +852,11 @@
     resultsBatch++;
     const n = items.length;
 
+    completeOperation({
+      status: n > 0 ? OPERATION_STATUS.SUCCESS : OPERATION_STATUS.PARTIAL,
+      outputCount: n
+    });
+
     if (effectiveFiles.length > 0 && n >= 0) {
       addOperationLineage({
         toolKey: route,
@@ -871,6 +916,10 @@
       <button class="secondary quick-action" class:is-active={workspaceControlsOpen} type="button" on:click={() => (workspaceControlsOpen = !workspaceControlsOpen)}>
         <span class="material-symbols-outlined" aria-hidden="true">tune</span>
         {workspaceControlsOpen ? "Hide Controls" : "Workspace Controls"}
+      </button>
+      <button class="secondary quick-action" class:is-active={appView === APP_VIEWS.SHOWCASE} type="button" on:click={() => setAppView(APP_VIEWS.SHOWCASE)}>
+        <span class="material-symbols-outlined" aria-hidden="true">grid_view</span>
+        Feature showcase
       </button>
       <button class="p2p-btn" class:is-active={p2pOpen} type="button" on:click={toggleP2P} aria-expanded={p2pOpen} aria-pressed={p2pOpen}>
         <span class="material-symbols-outlined">wifi_tethering</span>
@@ -950,6 +999,9 @@
     </div>
   </section>
 
+  {#if appView === APP_VIEWS.SHOWCASE}
+    <FeaturesShowcase groups={featureGroups} on:back={() => setAppView(APP_VIEWS.WORKSPACE)} on:action={onShowcaseAction} />
+  {:else}
   {#if p2pOpen}
     <section class="panel p2p-active-banner" aria-live="polite">
       <span class="material-symbols-outlined" aria-hidden="true">wifi_tethering</span>
@@ -1081,6 +1133,7 @@
       route={route}
       processing={processing}
       selectedCount={selectedFiles.length}
+      operationStatus={$activeOperation.status}
       on:clear={clearAll}
       on:secureclear={secureClearData}
       on:downloadselected={onDownloadSelectedFiles}
@@ -1257,7 +1310,7 @@
           <PdfTools
             files={effectivePdfFiles}
             busy={processing}
-            on:processing={(event) => (processing = event.detail)}
+            on:processing={onProcessing}
             on:progress={onProgress}
             on:error={onError}
             on:output={onOutput}
@@ -1268,7 +1321,7 @@
           <DjvuTools
             files={effectiveDjvuFiles}
             busy={processing}
-            on:processing={(event) => (processing = event.detail)}
+            on:processing={onProcessing}
             on:progress={onProgress}
             on:error={onError}
             on:output={onOutput}
@@ -1279,7 +1332,7 @@
           <ImageTools
             files={effectiveImageFiles}
             busy={processing}
-            on:processing={(event) => (processing = event.detail)}
+            on:processing={onProcessing}
             on:progress={onProgress}
             on:error={onError}
             on:output={onOutput}
@@ -1304,7 +1357,7 @@
           <FileTools
             files={effectiveFiles}
             busy={processing}
-            on:processing={(event) => (processing = event.detail)}
+            on:processing={onProcessing}
             on:progress={onProgress}
             on:error={onError}
             on:output={onOutput}
@@ -1315,7 +1368,7 @@
           <ContentTools
             files={effectiveContentFiles}
             busy={processing}
-            on:processing={(event) => (processing = event.detail)}
+            on:processing={onProcessing}
             on:progress={onProgress}
             on:error={onError}
             on:output={onOutput}
@@ -1330,7 +1383,7 @@
           <BatchOperations
             files={batchEligibleFiles}
             busy={processing}
-            on:processing={(event) => (processing = event.detail)}
+            on:processing={onProcessing}
             on:progress={onProgress}
             on:error={onError}
             on:output={onOutput}
@@ -1430,6 +1483,7 @@
       </a>
     </div>
   </section>
+  {/if}
 
   <!-- ── Toast stack ──────────────────────────────────────────────────────── -->
   <div class="toast-stack" aria-live="polite" aria-atomic="false">

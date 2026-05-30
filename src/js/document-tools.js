@@ -200,9 +200,9 @@ const BASE_STYLES = `
   hr { border: none; border-top: 1px solid #e0e0e0; margin: 1rem 0; }
 `;
 
-function htmlDoc(title, meta, bodyContent) {
+function htmlDoc(title, meta, bodyContent, extraStyles = "") {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escHtml(title)}</title>
-<style>${BASE_STYLES}</style></head><body>
+<style>${BASE_STYLES}${extraStyles ? `\n${extraStyles}` : ""}</style></head><body>
 <h1>${escHtml(title)}</h1>
 <p class="file-meta">${meta}</p>
 ${bodyContent}
@@ -351,6 +351,71 @@ export async function markupToHtml(text, filename) {
   return codeToHtml(text, filename, "html");
 }
 
+/**
+ * Fetch a remote HTML/text URL and convert it into a local HTML snapshot.
+ *
+ * The result is intentionally sanitized so the downstream PDF export path can
+ * render a stable, static snapshot without executing scripts.
+ */
+export async function urlToHtml(urlInput) {
+  const url = normalizeHttpUrl(urlInput);
+  const response = await fetch(url.href, {
+    mode: "cors",
+    credentials: "omit",
+    redirect: "follow"
+  });
+
+  if (!response.ok) {
+    throw new Error(`URL request failed with ${response.status} ${response.statusText}`.trim());
+  }
+
+  const contentType = `${response.headers.get("content-type") || ""}`.toLowerCase();
+  const raw = await response.text();
+
+  if (contentType.includes("text/plain")) {
+    return textToHtml(raw, url.hostname);
+  }
+
+  if (contentType && !contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) {
+    throw new Error("Only HTML or plain-text URLs can be converted here. Download PDFs in the PDF tools instead.");
+  }
+
+  const parser = new DOMParser();
+  const parsed = parser.parseFromString(raw, "text/html");
+  const title = parsed.querySelector("title")?.textContent?.trim() || url.hostname;
+
+  const styleContent = Array.from(parsed.querySelectorAll("style"))
+    .map((styleEl) => styleEl.textContent || "")
+    .join("\n")
+    .replace(/@import\s[^;]+;/g, "")
+    .replace(/@font-face\s*\{[^}]*\}/gs, "");
+
+  const body = parsed.body;
+  if (!body) {
+    throw new Error("The URL did not return a readable HTML body.");
+  }
+
+  body.querySelectorAll("script, noscript, iframe, object, embed, link[rel='stylesheet']").forEach((el) => el.remove());
+
+  body.querySelectorAll("[src], [href]").forEach((el) => {
+    for (const attr of ["src", "href"]) {
+      if (!el.hasAttribute(attr)) continue;
+      const value = el.getAttribute(attr)?.trim();
+      if (!value || value.startsWith("data:") || value.startsWith("blob:") || value.startsWith("mailto:") || value.startsWith("javascript:")) {
+        continue;
+      }
+
+      try {
+        el.setAttribute(attr, new URL(value, url.href).href);
+      } catch {
+        // Leave invalid URLs untouched.
+      }
+    }
+  });
+
+  return htmlDoc(title, `Fetched from ${escHtml(url.href)}`, body.innerHTML, styleContent);
+}
+
 // ── DOCX / PPTX / XLSX ──────────────────────────────────────────────────────
 
 export async function docxToHtml(buffer, filename) {
@@ -447,6 +512,24 @@ export async function fileToHtml(entry) {
   // Fallback
   const text = await readFileText(file);
   return textToHtml(text, name);
+}
+
+function normalizeHttpUrl(input) {
+  const raw = `${input ?? ""}`.trim();
+  if (!raw) {
+    throw new Error("Enter a URL before previewing or converting.");
+  }
+
+  const withScheme = /^https?:\/\//i.test(raw) || raw.startsWith("//")
+    ? raw
+    : `https://${raw}`;
+
+  const resolved = new URL(withScheme.startsWith("//") ? `https:${withScheme}` : withScheme);
+  if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+    throw new Error("Only http and https URLs are supported.");
+  }
+
+  return resolved;
 }
 
 // ---------------------------------------------------------------------------
