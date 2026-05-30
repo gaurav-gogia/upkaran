@@ -331,6 +331,9 @@
         <span>Preview — {primaryFile.name}</span>
         {#if previewLoading}<span class="loading-text">Rendering…</span>{/if}
       </div>
+      {#if primaryExt === "docx"}
+        <p class="preview-note">DOCX preview keeps headings, simple tables, and lists where possible. Advanced Word-only features may still flatten.</p>
+      {/if}
       {#if previewHtml}
         <iframe
           class="preview-frame"
@@ -563,6 +566,13 @@
   .preview-empty {
     padding: 1.5rem;
     text-align: center;
+  }
+
+  .preview-note {
+    margin: 0;
+    padding: 0.5rem 0.75rem 0;
+    font-size: 0.75rem;
+    color: var(--md-sys-color-on-surface-variant);
   }
 
   .empty-hint {

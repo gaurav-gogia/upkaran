@@ -29,6 +29,135 @@ function unzipToMap(buffer) {
   return unzipSync(uint8);
 }
 
+function docxFilesFromBuffer(buffer) {
+  return unzipToMap(buffer);
+}
+
+function docxXmlDoc(buffer) {
+  const files = docxFilesFromBuffer(buffer);
+  const docEntry = files["word/document.xml"];
+  if (!docEntry) return { files, doc: null };
+
+  const xml = strFromU8(docEntry);
+  return { files, doc: new DOMParser().parseFromString(xml, "application/xml") };
+}
+
+function docxAttr(el, ...names) {
+  if (!el) return null;
+  for (const name of names) {
+    const value = el.getAttribute(name);
+    if (value) return value;
+  }
+  for (const attr of Array.from(el.attributes || [])) {
+    if (names.includes(attr.name) || names.includes(attr.localName)) return attr.value;
+  }
+  return null;
+}
+
+function docxLocalName(node) {
+  return `${node?.localName || node?.tagName || ""}`.replace(/^.*:/, "").toLowerCase();
+}
+
+function docxCollectText(node) {
+  const pieces = [];
+  for (const child of Array.from(node?.childNodes || [])) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      const value = child.textContent || "";
+      if (value) pieces.push(value);
+      continue;
+    }
+
+    const name = docxLocalName(child);
+    if (name === "t") {
+      pieces.push(child.textContent || "");
+    } else if (name === "tab") {
+      pieces.push("\t");
+    } else if (name === "br" || name === "cr") {
+      pieces.push("\n");
+    } else {
+      pieces.push(docxCollectText(child));
+    }
+  }
+
+  return pieces.join("");
+}
+
+function docxRunHtml(run) {
+  const text = escHtml(docxCollectText(run));
+  if (!text) return "";
+
+  const runProps = run.querySelector("rPr");
+  const isBold = !!runProps?.querySelector("b");
+  const isItalic = !!runProps?.querySelector("i");
+  const isUnderline = !!runProps?.querySelector("u");
+  let result = text.replace(/\n/g, "<br>");
+  if (isUnderline) result = `<u>${result}</u>`;
+  if (isItalic) result = `<em>${result}</em>`;
+  if (isBold) result = `<strong>${result}</strong>`;
+  return result;
+}
+
+function docxParagraphText(paragraph) {
+  const runs = Array.from(paragraph?.querySelectorAll("r") || []);
+  const text = runs.map((run) => docxCollectText(run)).join("").trim();
+  if (text) return text;
+  return docxCollectText(paragraph).trim();
+}
+
+function docxParagraphHtml(paragraph) {
+  const style = docxAttr(paragraph?.querySelector("pStyle"), "val", "w:val") || "";
+  const text = docxParagraphText(paragraph);
+  const runs = Array.from(paragraph?.querySelectorAll("r") || []);
+  const content = runs.map((run) => docxRunHtml(run)).join("") || escHtml(text);
+  const listLevel = docxAttr(paragraph?.querySelector("ilvl"), "val", "w:val");
+  const hasList = !!paragraph?.querySelector("numPr");
+
+  if (/heading1/i.test(style)) return `<h2>${content}</h2>`;
+  if (/heading2/i.test(style)) return `<h3>${content}</h3>`;
+  if (/heading3/i.test(style)) return `<h4>${content}</h4>`;
+  if (hasList) {
+    const indent = Math.min(Number(listLevel || 0), 6);
+    return `<p class="docx-list" style="margin-left:${indent * 1.2}rem">• ${content}</p>`;
+  }
+
+  return `<p>${content}</p>`;
+}
+
+function docxTableHtml(table) {
+  const rows = Array.from(table?.querySelectorAll("tr") || []);
+  if (!rows.length) return "";
+
+  const body = rows.map((row) => {
+    const cells = Array.from(row.querySelectorAll("tc"));
+    const rendered = cells.map((cell) => {
+      const text = docxCollectText(cell).trim();
+      return `<td>${escHtml(text)}</td>`;
+    }).join("");
+    return `<tr>${rendered}</tr>`;
+  }).join("");
+
+  return `<table class="docx-table"><tbody>${body}</tbody></table>`;
+}
+
+function docxBlockHtml(block) {
+  const name = docxLocalName(block);
+  if (name === "p") return docxParagraphHtml(block);
+  if (name === "tbl") return docxTableHtml(block);
+  return "";
+}
+
+function docxBodyBlocks(doc) {
+  const body = doc?.querySelector("body");
+  if (!body) return [];
+  return Array.from(body.children || []).filter((el) => ["p", "tbl"].includes(docxLocalName(el)));
+}
+
+function docxMediaInventory(files) {
+  return Object.keys(files)
+    .filter((key) => /^word\/media\//i.test(key))
+    .map((path) => ({ path, ext: path.split(".").pop()?.toLowerCase() || "", size: files[path]?.length || 0 }));
+}
+
 function xmlText(xmlString) {
   const doc = new DOMParser().parseFromString(xmlString, "application/xml");
   return Array.from(doc.querySelectorAll("*"))
@@ -42,18 +171,28 @@ function xmlText(xmlString) {
  * Reads word/document.xml and extracts paragraph text.
  */
 export async function extractDocxText(buffer) {
-  const files = unzipToMap(buffer);
-  const docEntry = files["word/document.xml"];
-  if (!docEntry) return "[No content found in DOCX]";
+  const { doc } = docxXmlDoc(buffer);
+  if (!doc) return "[No content found in DOCX]";
 
-  const xml = strFromU8(docEntry);
-  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const blocks = docxBodyBlocks(doc);
+  const text = blocks.map((block) => {
+    const name = docxLocalName(block);
+    if (name === "tbl") {
+      return Array.from(block.querySelectorAll("tr"))
+        .map((row) => Array.from(row.querySelectorAll("tc")).map((cell) => docxCollectText(cell).trim()).filter(Boolean).join(" | "))
+        .filter(Boolean)
+        .join("\n");
+    }
 
-  // Build paragraphs from <w:p> elements
-  const paragraphs = Array.from(doc.querySelectorAll("p")).map((p) => {
-    return Array.from(p.querySelectorAll("t")).map((t) => t.textContent).join("");
-  });
-  return paragraphs.filter(Boolean).join("\n\n");
+    return docxParagraphText(block);
+  }).filter(Boolean).join("\n\n");
+
+  return text || "[No content found in DOCX]";
+}
+
+export async function extractDocxMedia(buffer) {
+  const { files } = docxXmlDoc(buffer);
+  return docxMediaInventory(files);
 }
 
 /**
@@ -419,8 +558,26 @@ export async function urlToHtml(urlInput) {
 // ── DOCX / PPTX / XLSX ──────────────────────────────────────────────────────
 
 export async function docxToHtml(buffer, filename) {
-  const text = await extractDocxText(buffer);
-  return textToHtml(text, filename);
+  const { doc, files } = docxXmlDoc(buffer);
+  if (!doc) return htmlDoc(filename, "DOCX document", "<p>No content found in DOCX.</p>");
+
+  const blocks = docxBodyBlocks(doc);
+  const media = docxMediaInventory(files);
+  const body = blocks.map(docxBlockHtml).filter(Boolean).join("\n");
+  const mediaBadge = media.length ? ` · ${media.length} embedded image${media.length === 1 ? "" : "s"}` : "";
+  const extraStyles = `
+    .docx-table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; font-size: 0.93rem; }
+    .docx-table td { border: 1px solid #c5c6d1; padding: 0.45rem 0.55rem; vertical-align: top; }
+    .docx-list { margin-top: 0.35rem; margin-bottom: 0.35rem; }
+    .docx-note { font-size: 0.78rem; color: #5f6472; margin-top: -0.2rem; }
+  `;
+
+  return htmlDoc(
+    filename,
+    `DOCX document · structure-aware preview${mediaBadge}`,
+    `${media.length ? `<p class="docx-note">Embedded media detected: ${media.length} file${media.length === 1 ? "" : "s"}.</p>` : ""}${body || "<p>No content found in DOCX.</p>"}`,
+    extraStyles
+  );
 }
 
 export async function pptxToHtml(buffer, filename) {

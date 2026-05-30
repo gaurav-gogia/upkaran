@@ -670,6 +670,12 @@ async function main() {
       pass: (output) => output?.status === "supported"
     },
     {
+      operation: "content.office.docx-preview",
+      fixture: officeFixturePath("sample.docx"),
+      fn: () => classifyOfficeExtension("docx"),
+      pass: (output) => output?.status === "supported"
+    },
+    {
       operation: "content.office.reliability",
       fixture: officeFixturePath("sample.pptx"),
       fn: () => classifyOfficeExtension("pptx"),

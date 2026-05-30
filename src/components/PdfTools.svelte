@@ -10,6 +10,7 @@
     addPdfPageNumbers,
     reorderPdfPages,
     compressPdf,
+    splitPdf,
     pdfToImages,
     renderPdfPreviewPage,
     addPdfImageWatermark,
@@ -378,6 +379,12 @@
     splitPreview = "";
     splitPreviewError = "";
   }
+
+  $: splitCanRun = files.length > 0 && !busy && (
+    splitMode === "per-page" ||
+    (splitMode === "custom" && !!splitSelection.trim() && !splitPreviewError) ||
+    (splitMode === "size" && Number.isFinite(Number.parseFloat(splitMaxChunkMb)) && Number.parseFloat(splitMaxChunkMb) > 0)
+  );
 
   $: if (splitPageCount > 0 && pageOrder.length !== splitPageCount) {
     pageOrder = Array.from({ length: splitPageCount }, (_, i) => i + 1);
@@ -1158,6 +1165,21 @@
         const blob = await mergePdfs(mergeQueue, (v) => dispatch("progress", v));
         emitTemplatedOutputs("merge", [{ name: "merged.pdf", blob }]);
       } else if (task === "split") {
+        if (splitMode === "custom") {
+          if (!splitSelection.trim()) {
+            throw new Error("Enter page selections like 1-2,3,4-5 before splitting.");
+          }
+          if (splitPreviewError) {
+            throw new Error(splitPreviewError);
+          }
+        }
+        if (splitMode === "size") {
+          const sizeMb = Number.parseFloat(splitMaxChunkMb);
+          if (!Number.isFinite(sizeMb) || sizeMb <= 0) {
+            throw new Error("Enter a split size greater than 0 MB.");
+          }
+        }
+
         const chunks = await splitPdf(
           files[0],
           {
@@ -1482,6 +1504,10 @@
           <small class="split-error">{splitPreviewError}</small>
         {/if}
       {/if}
+
+        <div class="actions">
+          <button type="button" on:click={() => run("split")} disabled={!splitCanRun}>Split PDF</button>
+        </div>
 
       {#if splitMode === "size"}
         <label for="pdf-split-size-mb">Max output size (MB)</label>
