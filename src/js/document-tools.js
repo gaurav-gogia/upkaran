@@ -166,6 +166,1354 @@ function xmlText(xmlString) {
     .join(" ");
 }
 
+function pptxLocalName(node) {
+  return `${node?.localName || node?.tagName || ""}`.replace(/^.*:/, "").toLowerCase();
+}
+
+function pptxCollectText(node) {
+  const pieces = [];
+  for (const child of Array.from(node?.childNodes || [])) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      const value = child.textContent || "";
+      if (value) pieces.push(value);
+      continue;
+    }
+
+    const name = pptxLocalName(child);
+    if (name === "t") {
+      pieces.push(child.textContent || "");
+    } else if (name === "tab") {
+      pieces.push("\t");
+    } else if (name === "br" || name === "cr") {
+      pieces.push("\n");
+    } else {
+      pieces.push(pptxCollectText(child));
+    }
+  }
+
+  return pieces.join("");
+}
+
+function pptxAttr(el, ...names) {
+  if (!el) return null;
+  for (const name of names) {
+    const value = el.getAttribute(name);
+    if (value != null && value !== "") return value;
+  }
+  for (const attr of Array.from(el.attributes || [])) {
+    if (names.includes(attr.name) || names.includes(attr.localName)) return attr.value;
+  }
+  return null;
+}
+
+function pptxAllByLocalName(root, name) {
+  const wanted = `${name}`.toLowerCase();
+  return Array.from(root?.querySelectorAll("*") || []).filter((el) => pptxLocalName(el) === wanted);
+}
+
+function pptxFirstByLocalName(root, name) {
+  return pptxAllByLocalName(root, name)[0] || null;
+}
+
+function pptxDirname(path) {
+  const idx = `${path}`.lastIndexOf("/");
+  return idx >= 0 ? path.slice(0, idx + 1) : "";
+}
+
+function pptxNormalizePartPath(path) {
+  const parts = `${path}`.split("/");
+  const out = [];
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      out.pop();
+      continue;
+    }
+    out.push(part);
+  }
+  return out.join("/");
+}
+
+function pptxResolvePartPath(basePartPath, targetPath) {
+  if (!targetPath) return "";
+  if (targetPath.startsWith("/")) return pptxNormalizePartPath(targetPath.replace(/^\/+/, ""));
+  return pptxNormalizePartPath(`${pptxDirname(basePartPath)}${targetPath}`);
+}
+
+function pptxRelationships(files, relsPartPath) {
+  const items = pptxRelationshipItems(files, relsPartPath);
+  const rels = new Map();
+  for (const item of items) {
+    rels.set(item.id, item.target);
+  }
+  return rels;
+}
+
+function pptxRelationshipItems(files, relsPartPath) {
+  const relsBytes = files[relsPartPath];
+  if (!relsBytes) return [];
+
+  const relsXml = strFromU8(relsBytes);
+  const relsDoc = new DOMParser().parseFromString(relsXml, "application/xml");
+  const items = [];
+  for (const rel of pptxAllByLocalName(relsDoc, "relationship")) {
+    const id = rel.getAttribute("Id");
+    const target = rel.getAttribute("Target");
+    const type = rel.getAttribute("Type") || "";
+    if (!id || !target) continue;
+    items.push({ id, target, type });
+  }
+  return items;
+}
+
+function pptxRelationshipTargetByType(files, relsPartPath, typeSuffix) {
+  const items = pptxRelationshipItems(files, relsPartPath);
+  const hit = items.find((item) => item.type.toLowerCase().endsWith(`/${`${typeSuffix}`.toLowerCase()}`));
+  return hit?.target || "";
+}
+
+function pptxXmlDocFromPart(files, partPath) {
+  const bytes = files[partPath];
+  if (!bytes) return null;
+  return new DOMParser().parseFromString(strFromU8(bytes), "application/xml");
+}
+
+function pptxRelsPartPath(partPath) {
+  const dir = pptxDirname(partPath);
+  const file = partPath.slice(dir.length);
+  return `${dir}_rels/${file}.rels`;
+}
+
+function pptxToBase64(uint8) {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < uint8.length; i += chunk) {
+    const slice = uint8.subarray(i, i + chunk);
+    binary += String.fromCharCode(...slice);
+  }
+  return btoa(binary);
+}
+
+function pptxMimeFromPath(path) {
+  const ext = `${path}`.split(".").pop()?.toLowerCase() || "";
+  if (ext === "png") return "image/png";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "gif") return "image/gif";
+  if (ext === "webp") return "image/webp";
+  if (ext === "bmp") return "image/bmp";
+  if (ext === "svg") return "image/svg+xml";
+  if (ext === "tif" || ext === "tiff") return "image/tiff";
+  return "application/octet-stream";
+}
+
+function pptxDataUriForPart(files, partPath) {
+  const bytes = files[partPath];
+  if (!bytes || !bytes.length) return "";
+  const mime = pptxMimeFromPath(partPath);
+  return `data:${mime};base64,${pptxToBase64(bytes)}`;
+}
+
+function pptxPresentationSize(files) {
+  const presentationXml = files["ppt/presentation.xml"] ? strFromU8(files["ppt/presentation.xml"]) : "";
+  if (!presentationXml) {
+    return { cx: 9144000, cy: 6858000 };
+  }
+
+  const presentationDoc = new DOMParser().parseFromString(presentationXml, "application/xml");
+  const sldSz = pptxFirstByLocalName(presentationDoc, "sldsz");
+  const cx = Number(pptxAttr(sldSz, "cx"));
+  const cy = Number(pptxAttr(sldSz, "cy"));
+
+  if (Number.isFinite(cx) && cx > 0 && Number.isFinite(cy) && cy > 0) {
+    return { cx, cy };
+  }
+
+  return { cx: 9144000, cy: 6858000 };
+}
+
+function pptxThemeColors(files, themePartPath = "") {
+  const chosenThemePath = themePartPath && files[themePartPath] ? themePartPath : "ppt/theme/theme1.xml";
+  const themeXml = files[chosenThemePath] ? strFromU8(files[chosenThemePath]) : "";
+  if (!themeXml) return new Map();
+
+  const themeDoc = new DOMParser().parseFromString(themeXml, "application/xml");
+  const clrScheme = pptxFirstByLocalName(themeDoc, "clrscheme");
+  const colors = new Map();
+
+  for (const node of Array.from(clrScheme?.children || [])) {
+    const key = pptxLocalName(node);
+    if (!key) continue;
+    const srgb = pptxFirstByLocalName(node, "srgbclr");
+    const sys = pptxFirstByLocalName(node, "sysclr");
+    const hex = `${pptxAttr(srgb, "val") || pptxAttr(sys, "lastClr") || ""}`.trim();
+    if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+      colors.set(key, `#${hex.toUpperCase()}`);
+    }
+  }
+
+  return colors;
+}
+
+function pptxHexToRgb(hex) {
+  const raw = `${hex || ""}`.replace(/^#/, "").trim();
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return null;
+  return {
+    r: parseInt(raw.slice(0, 2), 16),
+    g: parseInt(raw.slice(2, 4), 16),
+    b: parseInt(raw.slice(4, 6), 16)
+  };
+}
+
+function pptxRgbToHex(rgb) {
+  const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
+  return `#${[clamp(rgb.r), clamp(rgb.g), clamp(rgb.b)].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+
+function pptxApplyLumTransform(rgb, colorNode) {
+  const lumModNode = pptxFirstByLocalName(colorNode, "lummod");
+  const lumOffNode = pptxFirstByLocalName(colorNode, "lumoff");
+  const tintNode = pptxFirstByLocalName(colorNode, "tint");
+  const shadeNode = pptxFirstByLocalName(colorNode, "shade");
+
+  const lumMod = Number(pptxAttr(lumModNode, "val"));
+  const lumOff = Number(pptxAttr(lumOffNode, "val"));
+  const tint = Number(pptxAttr(tintNode, "val"));
+  const shade = Number(pptxAttr(shadeNode, "val"));
+
+  let out = { ...rgb };
+
+  if (Number.isFinite(lumMod) || Number.isFinite(lumOff)) {
+    const mod = Number.isFinite(lumMod) ? lumMod / 100000 : 1;
+    const off = Number.isFinite(lumOff) ? lumOff / 100000 : 0;
+    out = {
+      r: out.r * mod + 255 * off,
+      g: out.g * mod + 255 * off,
+      b: out.b * mod + 255 * off
+    };
+  }
+
+  if (Number.isFinite(tint)) {
+    const t = Math.max(0, Math.min(1, tint / 100000));
+    out = {
+      r: out.r + (255 - out.r) * t,
+      g: out.g + (255 - out.g) * t,
+      b: out.b + (255 - out.b) * t
+    };
+  }
+
+  if (Number.isFinite(shade)) {
+    const s = Math.max(0, Math.min(1, shade / 100000));
+    out = {
+      r: out.r * s,
+      g: out.g * s,
+      b: out.b * s
+    };
+  }
+
+  return out;
+}
+
+function pptxResolveColorNode(colorNode, themeColors) {
+  if (!colorNode) return null;
+  const srgb = pptxFirstByLocalName(colorNode, "srgbclr");
+  const sys = pptxFirstByLocalName(colorNode, "sysclr");
+  const scheme = pptxFirstByLocalName(colorNode, "schemeclr");
+
+  let base = null;
+  if (srgb) {
+    const hex = `${pptxAttr(srgb, "val") || ""}`.trim();
+    if (/^[0-9a-fA-F]{6}$/.test(hex)) base = `#${hex.toUpperCase()}`;
+  }
+
+  if (!base && sys) {
+    const hex = `${pptxAttr(sys, "lastClr") || ""}`.trim();
+    if (/^[0-9a-fA-F]{6}$/.test(hex)) base = `#${hex.toUpperCase()}`;
+  }
+
+  if (!base && scheme) {
+    const key = `${pptxAttr(scheme, "val") || ""}`.trim().toLowerCase();
+    base = themeColors.get(key) || null;
+  }
+
+  if (!base) return null;
+  const rgb = pptxHexToRgb(base);
+  if (!rgb) return base;
+
+  const transformed = pptxApplyLumTransform(rgb, srgb || sys || scheme);
+  return pptxRgbToHex(transformed);
+}
+
+function pptxGradientFillCss(root, themeColors) {
+  const gradFill = pptxFirstByLocalName(root, "gradfill");
+  if (!gradFill) return null;
+
+  const stops = pptxAllByLocalName(gradFill, "gs").map((gs) => {
+    const pos = Number(pptxAttr(gs, "pos"));
+    const pct = Number.isFinite(pos) ? Math.max(0, Math.min(100, pos / 1000)) : 0;
+    const color = pptxResolveColorNode(gs, themeColors) || "#FFFFFF";
+    return `${color} ${pct.toFixed(2)}%`;
+  });
+  if (!stops.length) return null;
+
+  const lin = pptxFirstByLocalName(gradFill, "lin");
+  const ang = Number(pptxAttr(lin, "ang"));
+  const angleDeg = Number.isFinite(ang) ? ((ang / 60000) + 90) % 360 : 180;
+  return `linear-gradient(${angleDeg.toFixed(2)}deg, ${stops.join(", ")})`;
+}
+
+function pptxColorFromFillNode(fillNode, themeColors) {
+  return pptxResolveColorNode(fillNode, themeColors);
+}
+
+function pptxSolidFillColor(root, themeColors) {
+  const solidFill = pptxFirstByLocalName(root, "solidfill");
+  return pptxColorFromFillNode(solidFill, themeColors);
+}
+
+function pptxFillCss(root, themeColors, fallback = "") {
+  const solid = pptxSolidFillColor(root, themeColors);
+  if (solid) return solid;
+  const gradient = pptxGradientFillCss(root, themeColors);
+  if (gradient) return gradient;
+  return fallback;
+}
+
+function pptxPlaceholderInfo(node) {
+  const ph = pptxFirstByLocalName(node, "ph");
+  if (!ph) return null;
+
+  const type = `${pptxAttr(ph, "type") || "body"}`.trim();
+  const idx = `${pptxAttr(ph, "idx") || "0"}`.trim();
+  return {
+    type,
+    idx,
+    key: `${type}:${idx}`
+  };
+}
+
+function pptxStyleKindFromPlaceholder(placeholder) {
+  const type = `${placeholder?.type || ""}`.toLowerCase();
+  if (["title", "ctrtitle", "subtitle"].includes(type)) return "title";
+  if (["body", "obj", "sldnum", "dt", "ftr"].includes(type)) return "body";
+  return "other";
+}
+
+function pptxMasterTextStyles(masterDoc) {
+  const txStyles = pptxFirstByLocalName(masterDoc, "txstyles");
+  const groups = [
+    { key: "title", node: pptxFirstByLocalName(txStyles, "titlestyle") },
+    { key: "body", node: pptxFirstByLocalName(txStyles, "bodystyle") },
+    { key: "other", node: pptxFirstByLocalName(txStyles, "otherstyle") }
+  ];
+
+  const result = new Map();
+  for (const group of groups) {
+    const levels = new Map();
+    for (let i = 1; i <= 9; i++) {
+      const levelNode = pptxFirstByLocalName(group.node, `lvl${i}ppr`);
+      if (levelNode) {
+        levels.set(i - 1, {
+          pPr: levelNode,
+          defRPr: pptxFirstByLocalName(levelNode, "defrpr")
+        });
+      }
+    }
+
+    const defPPr = pptxFirstByLocalName(group.node, "defppr");
+    const defRPr = pptxFirstByLocalName(group.node, "defrpr") || pptxFirstByLocalName(defPPr, "defrpr");
+    levels.set(-1, {
+      pPr: defPPr || null,
+      defRPr: defRPr || null
+    });
+    result.set(group.key, levels);
+  }
+
+  return result;
+}
+
+function pptxInheritedStyleForParagraph(masterStyles, placeholder, level) {
+  if (!masterStyles || typeof masterStyles.get !== "function") return null;
+  const kind = pptxStyleKindFromPlaceholder(placeholder);
+  const levels = masterStyles.get(kind) || masterStyles.get("other");
+  if (!levels) return null;
+  return levels.get(level) || levels.get(-1) || null;
+}
+
+function pptxParagraphLevel(paragraph) {
+  const pPr = pptxFirstByLocalName(paragraph, "ppr");
+  const level = Number(pptxAttr(pPr, "lvl"));
+  return Number.isFinite(level) ? Math.max(0, Math.min(8, level)) : 0;
+}
+
+function pptxSlideLinkedParts(files, slidePartPath) {
+  const slideRelsPartPath = pptxRelsPartPath(slidePartPath);
+  const slideLayoutTarget = pptxRelationshipTargetByType(files, slideRelsPartPath, "slideLayout");
+  const layoutPartPath = slideLayoutTarget ? pptxResolvePartPath(slidePartPath, slideLayoutTarget) : "";
+
+  const layoutRelsPartPath = layoutPartPath ? pptxRelsPartPath(layoutPartPath) : "";
+  const slideMasterTarget = layoutRelsPartPath
+    ? pptxRelationshipTargetByType(files, layoutRelsPartPath, "slideMaster")
+    : "";
+  const masterPartPath = slideMasterTarget ? pptxResolvePartPath(layoutPartPath, slideMasterTarget) : "";
+
+  const masterRelsPartPath = masterPartPath ? pptxRelsPartPath(masterPartPath) : "";
+  const themeTarget = masterRelsPartPath
+    ? pptxRelationshipTargetByType(files, masterRelsPartPath, "theme")
+    : "";
+  const themePartPath = themeTarget ? pptxResolvePartPath(masterPartPath, themeTarget) : "";
+
+  return {
+    slidePartPath,
+    layoutPartPath,
+    masterPartPath,
+    themePartPath
+  };
+}
+
+function pptxPushUniqueLines(target, lines) {
+  for (const line of lines || []) {
+    const value = `${line || ""}`.trim();
+    if (!value) continue;
+    if (!target.includes(value)) target.push(value);
+  }
+}
+
+function pptxFallbackParagraphs(doc) {
+  return pptxAllByLocalName(doc, "p")
+    .map((paragraph) => pptxCollectText(paragraph).replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function pptxCollectElementsFromDoc(doc, contextBase, partPath, rels) {
+  if (!doc) return [];
+  const spTree = pptxFirstByLocalName(doc, "sptree");
+  const nodes = Array.from(spTree?.children || []);
+  const elements = [];
+  pptxCollectSlideElements(nodes, {
+    ...contextBase,
+    rels,
+    slidePartPath: partPath,
+    source: contextBase.source || "slide"
+  }, [], elements);
+  return elements;
+}
+
+function pptxMergeInheritedElements(slideElements, layoutElements, masterElements) {
+  const area = (box) => Math.max(0, Number(box?.cx || 0)) * Math.max(0, Number(box?.cy || 0));
+
+  const intersectionArea = (a, b) => {
+    const ax1 = Number(a?.x || 0);
+    const ay1 = Number(a?.y || 0);
+    const ax2 = ax1 + Number(a?.cx || 0);
+    const ay2 = ay1 + Number(a?.cy || 0);
+    const bx1 = Number(b?.x || 0);
+    const by1 = Number(b?.y || 0);
+    const bx2 = bx1 + Number(b?.cx || 0);
+    const by2 = by1 + Number(b?.cy || 0);
+
+    const ix = Math.max(0, Math.min(ax2, bx2) - Math.max(ax1, bx1));
+    const iy = Math.max(0, Math.min(ay2, by2) - Math.max(ay1, by1));
+    return ix * iy;
+  };
+
+  const overlapRatio = (a, b) => {
+    const inter = intersectionArea(a, b);
+    if (inter <= 0) return 0;
+
+    const minArea = Math.max(1, Math.min(area(a), area(b)));
+    return inter / minArea;
+  };
+
+  const iou = (a, b) => {
+    const inter = intersectionArea(a, b);
+    if (inter <= 0) return 0;
+    const union = Math.max(1, area(a) + area(b) - inter);
+    return inter / union;
+  };
+
+  const elementCenter = (element) => {
+    const box = element?.box || {};
+    return {
+      x: Number(box.x || 0) + Number(box.cx || 0) / 2,
+      y: Number(box.y || 0) + Number(box.cy || 0) / 2
+    };
+  };
+
+  const similarityScore = (existing, candidate) => {
+    if (!existing || !candidate) return 0;
+    if (existing.type !== candidate.type) return 0;
+
+    const a = elementCenter(existing);
+    const b = elementCenter(candidate);
+    const dx = Math.abs(a.x - b.x);
+    const dy = Math.abs(a.y - b.y);
+
+    const cw = Math.max(Number(candidate.box?.cx || 0), 1);
+    const ch = Math.max(Number(candidate.box?.cy || 0), 1);
+    const centerNorm = Math.min(1, Math.hypot(dx / cw, dy / ch));
+
+    const ew = Math.max(Number(existing.box?.cx || 0), 1);
+    const eh = Math.max(Number(existing.box?.cy || 0), 1);
+    const sizeW = 1 - Math.min(1, Math.abs(ew - cw) / Math.max(ew, cw));
+    const sizeH = 1 - Math.min(1, Math.abs(eh - ch) / Math.max(eh, ch));
+    const sizeScore = (sizeW + sizeH) / 2;
+
+    const overlap = overlapRatio(existing.box, candidate.box);
+    const overlapIou = iou(existing.box, candidate.box);
+
+    const existingType = `${existing.placeholder?.type || ""}`.toLowerCase();
+    const candidateType = `${candidate.placeholder?.type || ""}`.toLowerCase();
+    const existingIdx = `${existing.placeholder?.idx || ""}`.toLowerCase();
+    const candidateIdx = `${candidate.placeholder?.idx || ""}`.toLowerCase();
+    const typeHint = existingType && candidateType && existingType === candidateType ? 1 : 0;
+    const idxHint = existingIdx && candidateIdx && existingIdx === candidateIdx ? 1 : 0;
+    const hintScore = Math.max(typeHint * 0.7, idxHint);
+
+    return overlapIou * 0.55 + overlap * 0.15 + sizeScore * 0.15 + (1 - centerNorm) * 0.1 + hintScore * 0.05;
+  };
+
+  const nearDuplicate = (existing, candidate) => {
+    return similarityScore(existing, candidate) >= 0.66;
+  };
+
+  const bestSimilarity = (pool, candidate) => {
+    let best = 0;
+    for (const existing of pool) {
+      best = Math.max(best, similarityScore(existing, candidate));
+    }
+    return best;
+  };
+
+  const requiresPlaceholderBinding = (element) => {
+    if (!element) return false;
+    return element.type === "text" || element.type === "table" || element.type === "image";
+  };
+
+  const canInherit = (element) => {
+    if (!requiresPlaceholderBinding(element)) return true;
+    return !!element.placeholder?.key;
+  };
+
+  if (!slideElements.length) {
+    const merged = layoutElements.filter((element) => canInherit(element));
+    const occupied = new Set(layoutElements.filter((el) => el.placeholder?.key).map((el) => el.placeholder.key));
+    for (const element of masterElements) {
+      if (!canInherit(element)) continue;
+      const key = element.placeholder?.key;
+      if (key && occupied.has(key)) continue;
+      if (!key && bestSimilarity(merged, element) >= 0.66) continue;
+      if (key) occupied.add(key);
+      merged.push(element);
+    }
+    return merged;
+  }
+
+  const merged = [...slideElements];
+  const occupied = new Set(slideElements.filter((el) => el.placeholder?.key).map((el) => el.placeholder.key));
+
+  for (const element of [...layoutElements, ...masterElements]) {
+    if (!canInherit(element)) continue;
+    const key = element.placeholder?.key;
+    if (!key && requiresPlaceholderBinding(element)) {
+      if (bestSimilarity(merged, element) < 0.66) {
+        merged.push(element);
+      }
+      continue;
+    }
+    if (!key) {
+      if (bestSimilarity(merged, element) < 0.66) {
+        merged.push(element);
+      }
+      continue;
+    }
+    if (occupied.has(key)) continue;
+    occupied.add(key);
+    merged.push(element);
+  }
+
+  return merged;
+}
+
+function pptxTitleFromElements(elements) {
+  const titleTypes = new Set(["title", "ctrtitle", "subtitle"]);
+  const hit = (elements || []).find((el) =>
+    el.type === "text" &&
+    el.placeholder?.type &&
+    titleTypes.has(`${el.placeholder.type}`.toLowerCase())
+  );
+  return hit?.paragraphs?.[0] || "";
+}
+
+function pptxReadTransform(node) {
+  const xfrm = pptxFirstByLocalName(node, "xfrm");
+  if (!xfrm) return null;
+
+  const off = pptxFirstByLocalName(xfrm, "off");
+  const ext = pptxFirstByLocalName(xfrm, "ext");
+  const x = Number(pptxAttr(off, "x"));
+  const y = Number(pptxAttr(off, "y"));
+  const cx = Number(pptxAttr(ext, "cx"));
+  const cy = Number(pptxAttr(ext, "cy"));
+  const rotRaw = Number(pptxAttr(xfrm, "rot"));
+  const rot = Number.isFinite(rotRaw) ? rotRaw / 60000 : 0;
+  const flipH = `${pptxAttr(xfrm, "flipH") || ""}`.toLowerCase() === "1" || `${pptxAttr(xfrm, "flipH") || ""}`.toLowerCase() === "true";
+  const flipV = `${pptxAttr(xfrm, "flipV") || ""}`.toLowerCase() === "1" || `${pptxAttr(xfrm, "flipV") || ""}`.toLowerCase() === "true";
+
+  if (![x, y, cx, cy].every((v) => Number.isFinite(v))) return null;
+  return { x, y, cx, cy, rot, flipH, flipV };
+}
+
+function pptxReadGroupTransform(groupNode, fallbackSize) {
+  const grpSpPr = pptxFirstByLocalName(groupNode, "grpsppr") || groupNode;
+  const xfrm = pptxFirstByLocalName(grpSpPr, "xfrm");
+  if (!xfrm) {
+    return {
+      offX: 0,
+      offY: 0,
+      extX: fallbackSize.cx,
+      extY: fallbackSize.cy,
+      chOffX: 0,
+      chOffY: 0,
+      chExtX: fallbackSize.cx,
+      chExtY: fallbackSize.cy
+    };
+  }
+
+  const off = pptxFirstByLocalName(xfrm, "off");
+  const ext = pptxFirstByLocalName(xfrm, "ext");
+  const chOff = pptxFirstByLocalName(xfrm, "choff");
+  const chExt = pptxFirstByLocalName(xfrm, "chext");
+
+  const offX = Number(pptxAttr(off, "x"));
+  const offY = Number(pptxAttr(off, "y"));
+  const extX = Number(pptxAttr(ext, "cx"));
+  const extY = Number(pptxAttr(ext, "cy"));
+  const chOffX = Number(pptxAttr(chOff, "x"));
+  const chOffY = Number(pptxAttr(chOff, "y"));
+  const chExtX = Number(pptxAttr(chExt, "cx"));
+  const chExtY = Number(pptxAttr(chExt, "cy"));
+
+  return {
+    offX: Number.isFinite(offX) ? offX : 0,
+    offY: Number.isFinite(offY) ? offY : 0,
+    extX: Number.isFinite(extX) && extX > 0 ? extX : fallbackSize.cx,
+    extY: Number.isFinite(extY) && extY > 0 ? extY : fallbackSize.cy,
+    chOffX: Number.isFinite(chOffX) ? chOffX : 0,
+    chOffY: Number.isFinite(chOffY) ? chOffY : 0,
+    chExtX: Number.isFinite(chExtX) && chExtX > 0 ? chExtX : fallbackSize.cx,
+    chExtY: Number.isFinite(chExtY) && chExtY > 0 ? chExtY : fallbackSize.cy
+  };
+}
+
+function pptxTransformBoxWithGroup(box, groupTransform) {
+  if (!box || !groupTransform) return box;
+  const scaleX = groupTransform.chExtX > 0 ? groupTransform.extX / groupTransform.chExtX : 1;
+  const scaleY = groupTransform.chExtY > 0 ? groupTransform.extY / groupTransform.chExtY : 1;
+
+  return {
+    ...box,
+    x: groupTransform.offX + (box.x - groupTransform.chOffX) * scaleX,
+    y: groupTransform.offY + (box.y - groupTransform.chOffY) * scaleY,
+    cx: box.cx * scaleX,
+    cy: box.cy * scaleY
+  };
+}
+
+function pptxApplyGroupTransformChain(box, chain) {
+  return (chain || []).reduce((acc, groupTransform) => pptxTransformBoxWithGroup(acc, groupTransform), box);
+}
+
+function pptxPercent(value, total) {
+  if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.max(0, Math.min(100, (value / total) * 100));
+}
+
+function pptxInlineBoxStyle(box, presentationSize) {
+  const left = pptxPercent(box.x, presentationSize.cx).toFixed(4);
+  const top = pptxPercent(box.y, presentationSize.cy).toFixed(4);
+  const width = pptxPercent(box.cx, presentationSize.cx).toFixed(4);
+  const height = pptxPercent(box.cy, presentationSize.cy).toFixed(4);
+  let style = `left:${left}%;top:${top}%;width:${width}%;height:${height}%;`;
+
+  const transformOps = [];
+  const scaleX = box.flipH ? -1 : 1;
+  const scaleY = box.flipV ? -1 : 1;
+  if (Number.isFinite(box.rot) && Math.abs(box.rot) > 0.001) {
+    transformOps.push(`rotate(${box.rot.toFixed(4)}deg)`);
+  }
+  if (scaleX !== 1 || scaleY !== 1) {
+    transformOps.push(`scale(${scaleX}, ${scaleY})`);
+  }
+  if (transformOps.length) {
+    style += `transform:${transformOps.join(" ")};transform-origin:center center;`;
+  }
+  return style;
+}
+
+function pptxTextAlignCss(algn) {
+  const value = `${algn || ""}`.toLowerCase();
+  if (value === "ctr" || value === "center") return "center";
+  if (value === "r" || value === "right") return "right";
+  if (value === "just" || value === "dist") return "justify";
+  return "left";
+}
+
+function pptxLengthToPt(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return numeric / 12700;
+}
+
+function pptxSpacingValueToCss(spacingNode) {
+  if (!spacingNode) return "";
+  const pts = pptxFirstByLocalName(spacingNode, "spcpts");
+  const pct = pptxFirstByLocalName(spacingNode, "spcpct");
+
+  const ptsRaw = Number(pptxAttr(pts, "val"));
+  if (Number.isFinite(ptsRaw) && ptsRaw > 0) {
+    return `${(ptsRaw / 100).toFixed(2)}pt`;
+  }
+
+  const pctRaw = Number(pptxAttr(pct, "val"));
+  if (Number.isFinite(pctRaw) && pctRaw > 0) {
+    return `${(pctRaw / 100000).toFixed(3)}`;
+  }
+
+  return "";
+}
+
+function pptxParagraphSpacingCss(pPr, stylePPr) {
+  const beforeNode = pptxFirstByLocalName(pPr, "spcbef") || pptxFirstByLocalName(stylePPr, "spcbef");
+  const afterNode = pptxFirstByLocalName(pPr, "spcaft") || pptxFirstByLocalName(stylePPr, "spcaft");
+  const lineNode = pptxFirstByLocalName(pPr, "lnspc") || pptxFirstByLocalName(stylePPr, "lnspc");
+
+  const before = pptxSpacingValueToCss(beforeNode);
+  const after = pptxSpacingValueToCss(afterNode);
+  const line = pptxSpacingValueToCss(lineNode);
+
+  const styles = [];
+  if (before) styles.push(`margin-top:${before}`);
+  if (after) styles.push(`margin-bottom:${after}`);
+  if (line) {
+    if (line.endsWith("pt")) styles.push(`line-height:${line}`);
+    else styles.push(`line-height:${line}`);
+  }
+  return styles.join(";");
+}
+
+function pptxTextBoxCss(txBody) {
+  const bodyPr = pptxFirstByLocalName(txBody, "bodypr");
+  if (!bodyPr) return "";
+
+  const lIns = pptxLengthToPt(pptxAttr(bodyPr, "lIns"));
+  const rIns = pptxLengthToPt(pptxAttr(bodyPr, "rIns"));
+  const tIns = pptxLengthToPt(pptxAttr(bodyPr, "tIns"));
+  const bIns = pptxLengthToPt(pptxAttr(bodyPr, "bIns"));
+  const wrap = `${pptxAttr(bodyPr, "wrap") || ""}`.toLowerCase();
+  const horzOverflow = `${pptxAttr(bodyPr, "horzOverflow") || ""}`.toLowerCase();
+  const vertOverflow = `${pptxAttr(bodyPr, "vertOverflow") || ""}`.toLowerCase();
+  const normAutofit = pptxFirstByLocalName(bodyPr, "normautofit");
+  const spAutofit = !!pptxFirstByLocalName(bodyPr, "spautofit");
+  const noAutofit = !!pptxFirstByLocalName(bodyPr, "noautofit");
+
+  const styles = [];
+  if (Number.isFinite(tIns)) styles.push(`--pptx-tx-pad-top:${tIns.toFixed(2)}pt`);
+  if (Number.isFinite(rIns)) styles.push(`--pptx-tx-pad-right:${rIns.toFixed(2)}pt`);
+  if (Number.isFinite(bIns)) styles.push(`--pptx-tx-pad-bottom:${bIns.toFixed(2)}pt`);
+  if (Number.isFinite(lIns)) styles.push(`--pptx-tx-pad-left:${lIns.toFixed(2)}pt`);
+
+  if (wrap === "none") styles.push("--pptx-tx-wrap:nowrap");
+  if (horzOverflow === "clip") styles.push("--pptx-tx-overflow-x:hidden");
+  if (vertOverflow === "clip") styles.push("--pptx-tx-overflow-y:hidden");
+
+  const fontScaleRaw = Number(pptxAttr(normAutofit, "fontScale"));
+  if (Number.isFinite(fontScaleRaw) && fontScaleRaw > 0) {
+    const scale = Math.max(0.55, Math.min(1, fontScaleRaw / 100000));
+    styles.push(`--pptx-font-scale:${scale.toFixed(3)}`);
+  } else if (spAutofit && !noAutofit) {
+    styles.push("--pptx-font-scale:0.92");
+  }
+
+  return styles.join(";");
+}
+
+function pptxShapePreset(spPr) {
+  const prstGeom = pptxFirstByLocalName(spPr, "prstgeom");
+  const preset = `${pptxAttr(prstGeom, "prst") || "rect"}`.toLowerCase();
+  const avLst = pptxFirstByLocalName(prstGeom, "avlst");
+  const adjusts = new Map();
+  for (const gd of pptxAllByLocalName(avLst, "gd")) {
+    const name = `${pptxAttr(gd, "name") || ""}`.trim().toLowerCase();
+    const raw = `${pptxAttr(gd, "fmla") || pptxAttr(gd, "val") || ""}`.trim();
+    const val = Number(raw);
+    const fallbackMatch = raw.match(/-?\d+(?:\.\d+)?/);
+    const parsed = Number.isFinite(val) ? val : Number(fallbackMatch?.[0]);
+    if (!name || !Number.isFinite(parsed)) continue;
+    adjusts.set(name, parsed);
+  }
+  return { preset, adjusts };
+}
+
+function pptxShapeClipPath(preset, adjusts) {
+  const p = `${preset || ""}`.toLowerCase();
+  const adjRaw = Number(adjusts?.get("adj"));
+  const adjPct = Number.isFinite(adjRaw) ? Math.max(4, Math.min(40, adjRaw / 1000)) : null;
+
+  if (p.includes("diamond")) {
+    return "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)";
+  }
+  if (p.includes("triangle")) {
+    return p.includes("rt") ? "polygon(0% 0%, 100% 100%, 0% 100%)" : "polygon(50% 0%, 100% 100%, 0% 100%)";
+  }
+  if (p.includes("parallelogram")) {
+    const skew = Number.isFinite(adjPct) ? adjPct : 18;
+    return `polygon(${skew.toFixed(2)}% 0%, 100% 0%, ${(100 - skew).toFixed(2)}% 100%, 0% 100%)`;
+  }
+  if (p.includes("trapezoid")) {
+    const inset = Number.isFinite(adjPct) ? adjPct : 18;
+    return `polygon(${inset.toFixed(2)}% 0%, ${(100 - inset).toFixed(2)}% 0%, 100% 100%, 0% 100%)`;
+  }
+  if (p.includes("chevron")) {
+    const notch = Number.isFinite(adjPct) ? Math.max(10, Math.min(32, adjPct)) : 20;
+    const inner = Math.max(4, notch * 0.55);
+    return `polygon(0% 0%, ${(100 - notch).toFixed(2)}% 0%, 100% 50%, ${(100 - notch).toFixed(2)}% 100%, 0% 100%, ${inner.toFixed(2)}% 50%)`;
+  }
+  if (p.includes("hexagon")) {
+    const edge = Number.isFinite(adjPct) ? Math.max(10, Math.min(28, adjPct)) : 20;
+    return `polygon(${edge.toFixed(2)}% 0%, ${(100 - edge).toFixed(2)}% 0%, 100% 50%, ${(100 - edge).toFixed(2)}% 100%, ${edge.toFixed(2)}% 100%, 0% 50%)`;
+  }
+  if (p.includes("octagon")) {
+    const cut = Number.isFinite(adjPct) ? Math.max(8, Math.min(24, adjPct)) : 16;
+    return `polygon(${cut.toFixed(2)}% 0%, ${(100 - cut).toFixed(2)}% 0%, 100% ${cut.toFixed(2)}%, 100% ${(100 - cut).toFixed(2)}%, ${(100 - cut).toFixed(2)}% 100%, ${cut.toFixed(2)}% 100%, 0% ${(100 - cut).toFixed(2)}%, 0% ${cut.toFixed(2)}%)`;
+  }
+  return "";
+}
+
+function pptxShapeCss(spPr, themeColors) {
+  const styles = [];
+  const lineNode = pptxFirstByLocalName(spPr, "ln");
+  const border = pptxBorderFromLine(lineNode, themeColors);
+  if (border) {
+    styles.push(`--pptx-shape-border:${border}`);
+  }
+
+  const { preset, adjusts } = pptxShapePreset(spPr);
+  const clipPath = pptxShapeClipPath(preset, adjusts);
+  if (clipPath) {
+    styles.push(`--pptx-shape-clip:${clipPath}`);
+  }
+  if (preset.includes("ellipse") || preset.includes("circle")) {
+    styles.push("--pptx-shape-radius:50%");
+  } else if (preset.includes("round")) {
+    const adj = adjusts.get("adj");
+    const radiusPct = Number.isFinite(adj) ? Math.max(2, Math.min(50, adj / 1000)) : 8;
+    styles.push(`--pptx-shape-radius:${radiusPct.toFixed(2)}%`);
+  } else if (preset.includes("pill")) {
+    styles.push("--pptx-shape-radius:999px");
+  }
+
+  return styles.join(";");
+}
+
+function pptxHeuristicAutoFitCss(box, paragraphs, existingCss = "") {
+  const css = `${existingCss || ""}`;
+  if (css.includes("--pptx-font-scale")) return css;
+
+  const text = (paragraphs || []).join(" ").replace(/\s+/g, " ").trim();
+  const charCount = text.length;
+  if (!charCount) return css;
+
+  const width = Math.max(1, Number(box?.cx || 0));
+  const height = Math.max(1, Number(box?.cy || 0));
+  const area = width * height;
+
+  const density = (charCount * 100000000) / area;
+  const longLinesPenalty = (paragraphs || []).some((p) => `${p || ""}`.length > 120) ? 0.06 : 0;
+
+  if (density < 9.5 && !longLinesPenalty) return css;
+
+  const rawScale = 1 - (density - 9.5) * 0.015 - longLinesPenalty;
+  const clamped = Math.max(0.72, Math.min(0.98, rawScale));
+  return `${css}${css ? ";" : ""}--pptx-font-scale:${clamped.toFixed(3)}`;
+}
+
+function pptxListMarker(type, number) {
+  const normalized = `${type || ""}`.toLowerCase();
+  const toRoman = (value) => {
+    const n = Math.max(1, Math.min(3999, Number(value) || 1));
+    const parts = [
+      [1000, "M"], [900, "CM"], [500, "D"], [400, "CD"],
+      [100, "C"], [90, "XC"], [50, "L"], [40, "XL"],
+      [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]
+    ];
+    let rest = n;
+    let out = "";
+    for (const [unit, sym] of parts) {
+      while (rest >= unit) {
+        out += sym;
+        rest -= unit;
+      }
+    }
+    return out;
+  };
+  if (normalized.includes("alphauc")) {
+    const letter = String.fromCharCode(64 + Math.max(1, Math.min(26, number)));
+    return normalized.includes("parenr") ? `${letter})` : `${letter}.`;
+  }
+  if (normalized.includes("alphalc")) {
+    const letter = String.fromCharCode(96 + Math.max(1, Math.min(26, number)));
+    return normalized.includes("parenr") ? `${letter})` : `${letter}.`;
+  }
+  if (normalized.includes("romanuc")) {
+    const roman = toRoman(number);
+    return normalized.includes("parenr") ? `${roman})` : `${roman}.`;
+  }
+  if (normalized.includes("romanlc")) {
+    const roman = toRoman(number).toLowerCase();
+    return normalized.includes("parenr") ? `${roman})` : `${roman}.`;
+  }
+  return normalized.includes("parenr") ? `${number})` : `${number}.`;
+}
+
+function pptxListPrefix(paragraph, pPr, stylePPr, listState, listLevel) {
+  const buCharNode = pptxFirstByLocalName(pPr, "buchar") || pptxFirstByLocalName(stylePPr, "buchar");
+  const buChar = `${pptxAttr(buCharNode, "char") || ""}`.trim();
+  if (buChar) return `${buChar} `;
+
+  const autoNumNode = pptxFirstByLocalName(pPr, "buautonum") || pptxFirstByLocalName(stylePPr, "buautonum");
+  if (!autoNumNode) return "";
+
+  const type = `${pptxAttr(autoNumNode, "type") || "arabicPeriod"}`;
+  const startAtRaw = Number(pptxAttr(autoNumNode, "startAt"));
+  const startAt = Number.isFinite(startAtRaw) && startAtRaw > 0 ? Math.floor(startAtRaw) : 1;
+  for (const key of Array.from(listState.keys())) {
+    const level = Number(key.split("::")[0]);
+    if (Number.isFinite(level) && level > listLevel) listState.delete(key);
+  }
+
+  const key = `${listLevel}::${type}`;
+  if (!listState.has(key)) {
+    listState.set(key, Math.max(0, startAt - 1));
+  }
+  const next = (listState.get(key) || 0) + 1;
+  listState.set(key, next);
+  return `${pptxListMarker(type, next)} `;
+}
+
+function pptxRunHtml(run, defaultRPr, themeColors) {
+  const text = pptxCollectText(run);
+  if (!text) return "";
+
+  const rPr = pptxFirstByLocalName(run, "rpr") || defaultRPr || null;
+  const sizeRaw = Number(pptxAttr(rPr, "sz") || pptxAttr(defaultRPr, "sz"));
+  const sizePt = Number.isFinite(sizeRaw) ? Math.max(8, sizeRaw / 100) : null;
+  const fontNode = pptxFirstByLocalName(rPr, "latin") || pptxFirstByLocalName(defaultRPr, "latin");
+  const font = `${pptxAttr(fontNode, "typeface") || ""}`.trim();
+  const color = pptxSolidFillColor(rPr, themeColors) || pptxSolidFillColor(defaultRPr, themeColors);
+  const bold = `${pptxAttr(rPr, "b") || ""}` === "1";
+  const italic = `${pptxAttr(rPr, "i") || ""}` === "1";
+  const underline = `${pptxAttr(rPr, "u") || ""}`.toLowerCase();
+
+  let style = "";
+  if (sizePt) style += `font-size:${sizePt.toFixed(2)}pt;`;
+  if (font) style += `font-family:${escHtml(font)},\"Segoe UI\",sans-serif;`;
+  if (color) style += `color:${color};`;
+  if (bold) style += "font-weight:700;";
+  if (italic) style += "font-style:italic;";
+  if (underline && underline !== "none") style += "text-decoration:underline;";
+
+  return `<span${style ? ` style=\"${style}\"` : ""}>${escHtml(text)}</span>`;
+}
+
+function pptxParagraphHtml(paragraph, txBody, themeColors, inheritedStyle = null, listState = new Map()) {
+  const pPr = pptxFirstByLocalName(paragraph, "ppr");
+  const bodyPr = pptxFirstByLocalName(txBody, "bodypr");
+  const stylePPr = inheritedStyle?.pPr || null;
+  const listLevel = Number(pptxAttr(pPr, "lvl") || pptxAttr(stylePPr, "lvl"));
+  const normalizedLevel = Number.isFinite(listLevel) ? Math.max(0, Math.min(8, listLevel)) : 0;
+  const runs = Array.from(paragraph?.children || []).filter((child) => {
+    const name = pptxLocalName(child);
+    return name === "r" || name === "fld";
+  });
+  const defaultRPr =
+    pptxFirstByLocalName(pPr, "defrpr") ||
+    inheritedStyle?.defRPr ||
+    pptxFirstByLocalName(paragraph, "endpararpr");
+  const runHtml = runs.map((run) => pptxRunHtml(run, defaultRPr, themeColors)).join("");
+  const rawText = pptxCollectText(paragraph).replace(/\s+/g, " ").trim();
+
+  const align = pptxTextAlignCss(pptxAttr(pPr, "algn") || pptxAttr(stylePPr, "algn"));
+  const anchor = `${pptxAttr(bodyPr, "anchor") || ""}`.toLowerCase();
+  const vertical = anchor === "ctr" || anchor === "mid" ? "middle" : anchor === "b" ? "bottom" : "top";
+  const marLPt = pptxLengthToPt(pptxAttr(pPr, "marL") || pptxAttr(stylePPr, "marL"));
+  const indentPt = pptxLengthToPt(pptxAttr(pPr, "indent") || pptxAttr(stylePPr, "indent"));
+  const fallbackIndent = normalizedLevel > 0 ? normalizedLevel * 1.2 : 0;
+  const prefix = pptxListPrefix(paragraph, pPr, stylePPr, listState, normalizedLevel);
+  const spacingStyle = pptxParagraphSpacingCss(pPr, stylePPr);
+
+  const paragraphStyle = [
+    `text-align:${align}`,
+    Number.isFinite(marLPt) ? `margin-left:${marLPt.toFixed(2)}pt` : (fallbackIndent ? `padding-left:${fallbackIndent.toFixed(2)}em` : ""),
+    Number.isFinite(indentPt) ? `text-indent:${indentPt.toFixed(2)}pt` : "",
+    spacingStyle
+  ].filter(Boolean).join(";");
+  const html = `<p style=\"${paragraphStyle}\">${prefix}${runHtml || escHtml(rawText)}</p>`;
+  return {
+    html,
+    text: rawText,
+    vertical
+  };
+}
+
+function pptxParseShape(sp, presentationSize, themeColors, masterStyles) {
+  const txBody = pptxFirstByLocalName(sp, "txbody");
+  if (!txBody) return null;
+
+  const placeholder = pptxPlaceholderInfo(sp);
+  const listState = new Map();
+
+  const paragraphData = pptxAllByLocalName(txBody, "p")
+    .map((paragraph) => {
+      const level = pptxParagraphLevel(paragraph);
+      const inheritedStyle = pptxInheritedStyleForParagraph(masterStyles, placeholder, level);
+      return pptxParagraphHtml(paragraph, txBody, themeColors, inheritedStyle, listState);
+    })
+    .filter((item) => item.text);
+
+  const paragraphs = paragraphData.map((item) => item.text);
+  const htmlParagraphs = paragraphData.map((item) => item.html).join("");
+  const vertical = paragraphData[0]?.vertical || "top";
+
+  if (!paragraphs.length) return null;
+
+  const spPr = pptxFirstByLocalName(sp, "sppr") || sp;
+  const box = pptxReadTransform(spPr) || { x: 0, y: 0, cx: presentationSize.cx, cy: presentationSize.cy * 0.2 };
+  const baseTextCss = pptxTextBoxCss(txBody);
+  const geometryCss = pptxShapeCss(spPr, themeColors);
+  const textCss = pptxHeuristicAutoFitCss(box, paragraphs, [baseTextCss, geometryCss].filter(Boolean).join(";"));
+  return {
+    type: "text",
+    box,
+    paragraphs,
+    htmlParagraphs,
+    vertical,
+    fillCss: pptxFillCss(spPr, themeColors, "transparent"),
+    placeholder,
+    textCss
+  };
+}
+
+function pptxParsePicture(pic, slidePartPath, rels, files, presentationSize) {
+  const blip = pptxFirstByLocalName(pic, "blip");
+  const embedId = pptxAttr(blip, "r:embed", "embed");
+  if (!embedId) return null;
+
+  const target = rels.get(embedId);
+  if (!target) return null;
+
+  const partPath = pptxResolvePartPath(slidePartPath, target);
+  const src = pptxDataUriForPart(files, partPath);
+  if (!src) return null;
+
+  const spPr = pptxFirstByLocalName(pic, "sppr") || pic;
+  const box = pptxReadTransform(spPr) || { x: 0, y: 0, cx: presentationSize.cx, cy: presentationSize.cy };
+  return {
+    type: "image",
+    box,
+    src
+  };
+}
+
+function pptxBorderFromLine(lineNode, themeColors) {
+  if (!lineNode) return "";
+  if (pptxFirstByLocalName(lineNode, "nofill")) return "";
+
+  const dashNode = pptxFirstByLocalName(lineNode, "prstdash");
+  const dash = `${pptxAttr(dashNode, "val") || ""}`.toLowerCase();
+  const dashStyle = (() => {
+    if (!dash) return "solid";
+    if (["sysdot", "dot", "lgdot", "dashdotdot"].includes(dash)) return "dotted";
+    if (["dash", "lgdash", "sysdash", "dashdot"].includes(dash)) return "dashed";
+    return "solid";
+  })();
+
+  const widthRaw = Number(pptxAttr(lineNode, "w"));
+  const widthPt = Number.isFinite(widthRaw) && widthRaw > 0 ? Math.max(0.5, widthRaw / 12700) : 1;
+  const color = pptxSolidFillColor(lineNode, themeColors) || "#94a3b8";
+  return `${widthPt.toFixed(2)}pt ${dashStyle} ${color}`;
+}
+
+function pptxTableCellBorders(tcPr, themeColors) {
+  const left = pptxBorderFromLine(pptxFirstByLocalName(tcPr, "lnl"), themeColors);
+  const right = pptxBorderFromLine(pptxFirstByLocalName(tcPr, "lnr"), themeColors);
+  const top = pptxBorderFromLine(pptxFirstByLocalName(tcPr, "lnt"), themeColors);
+  const bottom = pptxBorderFromLine(pptxFirstByLocalName(tcPr, "lnb"), themeColors);
+
+  const fallbackColor = themeColors?.get("tx1") || themeColors?.get("dk1") || "#94a3b8";
+  const fallback = `1.00pt solid ${fallbackColor}`;
+
+  return {
+    left: left || fallback,
+    right: right || fallback,
+    top: top || fallback,
+    bottom: bottom || fallback
+  };
+}
+
+function pptxParseTableFrame(graphicFrame, presentationSize, themeColors) {
+  const table = pptxFirstByLocalName(graphicFrame, "tbl");
+  if (!table) return null;
+
+  const xfrm = pptxFirstByLocalName(graphicFrame, "xfrm") || graphicFrame;
+  const box = pptxReadTransform(xfrm) || { x: 0, y: 0, cx: presentationSize.cx * 0.5, cy: presentationSize.cy * 0.3 };
+
+  const rows = pptxAllByLocalName(table, "tr").map((row) => {
+    const cells = pptxAllByLocalName(row, "tc").map((cell) => {
+      const tcPr = pptxFirstByLocalName(cell, "tcpr") || cell;
+      const paragraphs = pptxAllByLocalName(cell, "p")
+        .map((paragraph) => pptxCollectText(paragraph).replace(/\s+/g, " ").trim())
+        .filter(Boolean);
+
+      const gridSpan = Number(pptxAttr(cell, "gridSpan") || pptxAttr(tcPr, "gridSpan"));
+      const rowSpan = Number(pptxAttr(cell, "rowSpan") || pptxAttr(tcPr, "rowSpan"));
+
+      const hMerge =
+        !!pptxFirstByLocalName(tcPr, "hmerge") ||
+        `${pptxAttr(cell, "hMerge") || pptxAttr(tcPr, "hMerge") || ""}`.toLowerCase() === "1";
+      const vMerge =
+        !!pptxFirstByLocalName(tcPr, "vmerge") ||
+        `${pptxAttr(cell, "vMerge") || pptxAttr(tcPr, "vMerge") || ""}`.toLowerCase() === "1";
+
+      const anchor = `${pptxAttr(tcPr, "anchor") || ""}`.toLowerCase();
+      const valign = anchor === "ctr" || anchor === "mid" ? "middle" : anchor === "b" ? "bottom" : "top";
+
+      return {
+        text: paragraphs.join("\n"),
+        colspan: Number.isFinite(gridSpan) && gridSpan > 1 ? gridSpan : 1,
+        rowspan: Number.isFinite(rowSpan) && rowSpan > 1 ? rowSpan : 1,
+        skip: hMerge || vMerge,
+        fillCss: pptxFillCss(tcPr, themeColors, ""),
+        valign,
+        borders: pptxTableCellBorders(tcPr, themeColors)
+      };
+    });
+
+    return cells;
+  }).filter((row) => row.length > 0);
+
+  if (!rows.length) return null;
+
+  return {
+    type: "table",
+    box,
+    rows,
+    fillCss: pptxFillCss(table, themeColors, "rgba(255,255,255,0.95)"),
+    placeholder: pptxPlaceholderInfo(graphicFrame)
+  };
+}
+
+function pptxParseConnector(connector, presentationSize, themeColors) {
+  const spPr = pptxFirstByLocalName(connector, "sppr") || connector;
+  const box = pptxReadTransform(spPr);
+  if (!box) return null;
+
+  const line = pptxFirstByLocalName(spPr, "ln");
+  const headEnd = pptxFirstByLocalName(line, "headend");
+  const tailEnd = pptxFirstByLocalName(line, "tailend");
+  const headType = `${pptxAttr(headEnd, "type") || ""}`.toLowerCase();
+  const tailType = `${pptxAttr(tailEnd, "type") || ""}`.toLowerCase();
+  const widthRaw = Number(pptxAttr(line, "w"));
+  const widthPt = Number.isFinite(widthRaw) && widthRaw > 0 ? Math.max(1, widthRaw / 12700) : 1.5;
+  const minEmu = Math.max(12700, widthPt * 12700);
+
+  const rawCx = Math.max(0, Number(box.cx || 0));
+  const rawCy = Math.max(0, Number(box.cy || 0));
+  const renderCx = Math.max(rawCx, minEmu);
+  const renderCy = Math.max(rawCy, minEmu);
+
+  const mostlyHorizontal = rawCx > minEmu * 1.2 && rawCy <= minEmu * 1.2;
+  const mostlyVertical = rawCy > minEmu * 1.2 && rawCx <= minEmu * 1.2;
+
+  let x1 = box.flipH ? 100 : 0;
+  let y1 = box.flipV ? 100 : 0;
+  let x2 = box.flipH ? 0 : 100;
+  let y2 = box.flipV ? 0 : 100;
+
+  if (mostlyHorizontal) {
+    y1 = 50;
+    y2 = 50;
+  } else if (mostlyVertical) {
+    x1 = 50;
+    x2 = 50;
+  }
+
+  return {
+    type: "line",
+    box: { x: box.x, y: box.y, cx: renderCx, cy: renderCy, rot: box.rot || 0 },
+    x1,
+    y1,
+    x2,
+    y2,
+    headType: headType && headType !== "none" ? headType : "",
+    tailType: tailType && tailType !== "none" ? tailType : "",
+    stroke: pptxSolidFillColor(line, themeColors) || "#4b5563",
+    strokeWidthPt: widthPt
+  };
+}
+
+function pptxParseSlideBackground(slideDoc, themeColors, fallback = null) {
+  const bgPr = pptxFirstByLocalName(slideDoc, "bgpr");
+  return pptxFillCss(bgPr, themeColors, fallback);
+}
+
+function pptxCollectSlideElements(nodes, context, chain, out) {
+  for (const node of nodes) {
+    const name = pptxLocalName(node);
+    if (name === "sp") {
+      const textElement = pptxParseShape(node, context.presentationSize, context.themeColors, context.masterStyles);
+      if (textElement) {
+        textElement.box = pptxApplyGroupTransformChain(textElement.box, chain);
+        textElement.source = context.source || "slide";
+        out.push(textElement);
+      }
+      continue;
+    }
+
+    if (name === "pic") {
+      const imageElement = pptxParsePicture(node, context.slidePartPath, context.rels, context.files, context.presentationSize);
+      if (imageElement) {
+        imageElement.box = pptxApplyGroupTransformChain(imageElement.box, chain);
+        imageElement.source = context.source || "slide";
+        imageElement.placeholder = pptxPlaceholderInfo(node);
+        out.push(imageElement);
+      }
+      continue;
+    }
+
+    if (name === "graphicframe") {
+      const tableElement = pptxParseTableFrame(node, context.presentationSize, context.themeColors);
+      if (tableElement) {
+        tableElement.box = pptxApplyGroupTransformChain(tableElement.box, chain);
+        tableElement.source = context.source || "slide";
+        out.push(tableElement);
+      }
+      continue;
+    }
+
+    if (name === "cxnsp") {
+      const lineElement = pptxParseConnector(node, context.presentationSize, context.themeColors);
+      if (lineElement) {
+        lineElement.box = pptxApplyGroupTransformChain(lineElement.box, chain);
+        lineElement.source = context.source || "slide";
+        out.push(lineElement);
+      }
+      continue;
+    }
+
+    if (name === "grpsp") {
+      const groupTransform = pptxReadGroupTransform(node, context.presentationSize);
+      const childNodes = Array.from(node.children || []).filter((child) => {
+        const childName = pptxLocalName(child);
+        return !["nvgrpsppr", "grpsppr"].includes(childName);
+      });
+      pptxCollectSlideElements(childNodes, context, [...chain, groupTransform], out);
+    }
+  }
+}
+
+function pptxSlideModel(files, slidePartPath, presentationSize) {
+  const links = pptxSlideLinkedParts(files, slidePartPath);
+
+  const slideDoc = pptxXmlDocFromPart(files, links.slidePartPath);
+  const layoutDoc = links.layoutPartPath ? pptxXmlDocFromPart(files, links.layoutPartPath) : null;
+  const masterDoc = links.masterPartPath ? pptxXmlDocFromPart(files, links.masterPartPath) : null;
+
+  const slideRels = pptxRelationships(files, pptxRelsPartPath(links.slidePartPath));
+  const layoutRels = links.layoutPartPath ? pptxRelationships(files, pptxRelsPartPath(links.layoutPartPath)) : new Map();
+  const masterRels = links.masterPartPath ? pptxRelationships(files, pptxRelsPartPath(links.masterPartPath)) : new Map();
+  const themeColors = pptxThemeColors(files, links.themePartPath);
+  const masterStyles = pptxMasterTextStyles(masterDoc);
+
+  const contextBase = {
+    files,
+    presentationSize,
+    themeColors,
+    masterStyles
+  };
+
+  const slideElements = pptxCollectElementsFromDoc(slideDoc, { ...contextBase, source: "slide" }, links.slidePartPath, slideRels);
+  const layoutElements = layoutDoc
+    ? pptxCollectElementsFromDoc(layoutDoc, { ...contextBase, source: "layout" }, links.layoutPartPath, layoutRels)
+    : [];
+  const masterElements = masterDoc
+    ? pptxCollectElementsFromDoc(masterDoc, { ...contextBase, source: "master" }, links.masterPartPath, masterRels)
+    : [];
+
+  const elements = pptxMergeInheritedElements(slideElements, layoutElements, masterElements);
+
+  const fallbackParagraphs = [];
+  pptxPushUniqueLines(fallbackParagraphs, pptxFallbackParagraphs(slideDoc));
+  if (!fallbackParagraphs.length && layoutDoc) {
+    pptxPushUniqueLines(fallbackParagraphs, pptxFallbackParagraphs(layoutDoc));
+  }
+  if (!fallbackParagraphs.length && masterDoc) {
+    pptxPushUniqueLines(fallbackParagraphs, pptxFallbackParagraphs(masterDoc));
+  }
+
+  const background =
+    pptxParseSlideBackground(slideDoc, themeColors, null) ||
+    pptxParseSlideBackground(layoutDoc, themeColors, null) ||
+    pptxParseSlideBackground(masterDoc, themeColors, null) ||
+    "#ffffff";
+
+  const title = pptxTitleFromElements(elements) || fallbackParagraphs[0] || "Untitled slide";
+
+  return {
+    title,
+    elements,
+    fallbackParagraphs,
+    background
+  };
+}
+
+function pptxSlideEntries(files) {
+  const presentationXml = files["ppt/presentation.xml"] ? strFromU8(files["ppt/presentation.xml"]) : "";
+  const relsXml = files["ppt/_rels/presentation.xml.rels"] ? strFromU8(files["ppt/_rels/presentation.xml.rels"]) : "";
+
+  const presentationDoc = presentationXml ? new DOMParser().parseFromString(presentationXml, "application/xml") : null;
+  const relsDoc = relsXml ? new DOMParser().parseFromString(relsXml, "application/xml") : null;
+  const relTargets = new Map();
+
+  for (const rel of Array.from(relsDoc?.querySelectorAll("*") || []).filter((el) => pptxLocalName(el) === "relationship")) {
+    const id = rel.getAttribute("Id");
+    const target = rel.getAttribute("Target");
+    if (!id || !target) continue;
+    relTargets.set(id, target.replace(/^\/+/, ""));
+  }
+
+  const orderedSlides = Array.from(presentationDoc?.querySelectorAll("*") || [])
+    .filter((el) => pptxLocalName(el) === "sldid")
+    .map((slideId) => {
+      const relId = slideId.getAttribute("r:id") || slideId.getAttribute("id") || slideId.getAttribute("rId");
+      const target = relId ? relTargets.get(relId) : null;
+      if (!target) return null;
+      const path = target.startsWith("ppt/") ? target : `ppt/${target}`;
+      return { path };
+    })
+    .filter(Boolean);
+
+  if (orderedSlides.length) return orderedSlides;
+
+  return Object.keys(files)
+    .filter((key) => /^ppt\/slides\/slide\d+\.xml$/i.test(key))
+    .sort((a, b) => {
+      const na = Number(a.match(/\d+/)?.[0] ?? 0);
+      const nb = Number(b.match(/\d+/)?.[0] ?? 0);
+      return na - nb;
+    })
+    .map((path) => ({ path }));
+}
+
 /**
  * Extract text from a DOCX file.
  * Reads word/document.xml and extracts paragraph text.
@@ -200,23 +1548,16 @@ export async function extractDocxMedia(buffer) {
  */
 export async function extractPptxText(buffer) {
   const files = unzipToMap(buffer);
-  const slideEntries = Object.keys(files)
-    .filter((k) => /^ppt\/slides\/slide\d+\.xml$/.test(k))
-    .sort((a, b) => {
-      const na = Number(a.match(/\d+/)?.[0] ?? 0);
-      const nb = Number(b.match(/\d+/)?.[0] ?? 0);
-      return na - nb;
-    });
+  const slideEntries = pptxSlideEntries(files);
+  const presentationSize = pptxPresentationSize(files);
 
   const slides = [];
   for (let i = 0; i < slideEntries.length; i++) {
-    const xml = strFromU8(files[slideEntries[i]]);
-    const doc = new DOMParser().parseFromString(xml, "application/xml");
-    const text = Array.from(doc.querySelectorAll("t"))
-      .map((t) => t.textContent.trim())
-      .filter(Boolean)
-      .join(" ");
-    if (text) slides.push(`Slide ${i + 1}: ${text}`);
+    const entry = slideEntries[i];
+    const model = pptxSlideModel(files, entry.path, presentationSize);
+    const paragraphs = model.fallbackParagraphs;
+    const text = paragraphs.join("\n").trim();
+    slides.push(text ? `Slide ${i + 1}: ${text}` : `Slide ${i + 1}: [No text content found]`);
   }
   return slides.join("\n\n") || "[No text content found in PPTX]";
 }
@@ -581,8 +1922,258 @@ export async function docxToHtml(buffer, filename) {
 }
 
 export async function pptxToHtml(buffer, filename) {
-  const text = await extractPptxText(buffer);
-  return textToHtml(text, filename);
+  const files = unzipToMap(buffer);
+  const slideEntries = pptxSlideEntries(files);
+  const presentationSize = pptxPresentationSize(files);
+  const stageWidth = 960;
+  const stageHeight = Math.round(stageWidth * (presentationSize.cy / presentationSize.cx));
+
+  const slides = [];
+  for (let i = 0; i < slideEntries.length; i++) {
+    const entry = slideEntries[i];
+    const model = pptxSlideModel(files, entry.path, presentationSize);
+
+    const elementsHtml = model.elements.map((element, elementIndex) => {
+      if (element.type === "image") {
+        return `<div class="pptx-el pptx-image" style="${pptxInlineBoxStyle(element.box, presentationSize)}"><img src="${escHtml(element.src)}" alt="" /></div>`;
+      }
+
+      if (element.type === "table") {
+        const tableHtml = element.rows.map((row) => {
+          const cellsHtml = row
+            .filter((cell) => !cell.skip)
+            .map((cell) => {
+              const attrs = [
+                cell.colspan > 1 ? `colspan=\"${cell.colspan}\"` : "",
+                cell.rowspan > 1 ? `rowspan=\"${cell.rowspan}\"` : ""
+              ].filter(Boolean).join(" ");
+              const style = [
+                cell.fillCss ? `background:${cell.fillCss}` : "",
+                cell.valign ? `vertical-align:${cell.valign}` : "",
+                cell.borders?.left ? `border-left:${cell.borders.left}` : "",
+                cell.borders?.right ? `border-right:${cell.borders.right}` : "",
+                cell.borders?.top ? `border-top:${cell.borders.top}` : "",
+                cell.borders?.bottom ? `border-bottom:${cell.borders.bottom}` : ""
+              ].filter(Boolean).join(";");
+              return `<td${attrs ? ` ${attrs}` : ""}${style ? ` style=\"${style}\"` : ""}>${escHtml(cell.text).replace(/\n/g, "<br>")}</td>`;
+            }).join("");
+          return `<tr>${cellsHtml}</tr>`;
+        }).join("");
+        const style = `${pptxInlineBoxStyle(element.box, presentationSize)}--pptx-table-fill:${element.fillCss || "rgba(255,255,255,0.95)"};`;
+        return `<div class="pptx-el pptx-table" style="${style}"><table><tbody>${tableHtml}</tbody></table></div>`;
+      }
+
+      if (element.type === "line") {
+        const style = `${pptxInlineBoxStyle(element.box, presentationSize)}--pptx-line-color:${element.stroke};--pptx-line-width:${element.strokeWidthPt.toFixed(2)}pt;`;
+        const markerShape = (kind) => {
+          const k = `${kind || ""}`.toLowerCase();
+          if (!k) return "";
+          if (["arrow", "triangle", "stealth"].includes(k)) {
+            return "<path d=\"M0 0 L10 5 L0 10 z\" fill=\"currentColor\" />";
+          }
+          if (k === "oval") {
+            return "<circle cx=\"5\" cy=\"5\" r=\"3.4\" fill=\"currentColor\" />";
+          }
+          if (k === "diamond") {
+            return "<path d=\"M1 5 L5 1 L9 5 L5 9 z\" fill=\"currentColor\" />";
+          }
+          if (k === "open") {
+            return "<path d=\"M1 1 L9 5 L1 9\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\" />";
+          }
+          return "<path d=\"M0 0 L10 5 L0 10 z\" fill=\"currentColor\" />";
+        };
+
+        const markerStartId = element.headType ? `pptx-line-start-${i}-${elementIndex}` : "";
+        const markerEndId = element.tailType ? `pptx-line-end-${i}-${elementIndex}` : "";
+        const markerDefs = [
+          markerStartId ? `<marker id="${markerStartId}" viewBox="0 0 10 10" markerWidth="8" markerHeight="8" refX="1" refY="5" orient="auto-start-reverse" markerUnits="strokeWidth">${markerShape(element.headType)}</marker>` : "",
+          markerEndId ? `<marker id="${markerEndId}" viewBox="0 0 10 10" markerWidth="8" markerHeight="8" refX="9" refY="5" orient="auto-start-reverse" markerUnits="strokeWidth">${markerShape(element.tailType)}</marker>` : ""
+        ].filter(Boolean).join("");
+
+        const markerAttrs = [
+          markerStartId ? `marker-start=\"url(#${markerStartId})\"` : "",
+          markerEndId ? `marker-end=\"url(#${markerEndId})\"` : ""
+        ].filter(Boolean).join(" ");
+
+        return `<div class="pptx-el pptx-line" style="${style}"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${markerDefs ? `<defs>${markerDefs}</defs>` : ""}<line x1="${Number.isFinite(element.x1) ? element.x1.toFixed(2) : "0"}" y1="${Number.isFinite(element.y1) ? element.y1.toFixed(2) : "0"}" x2="${Number.isFinite(element.x2) ? element.x2.toFixed(2) : "100"}" y2="${Number.isFinite(element.y2) ? element.y2.toFixed(2) : "100"}" ${markerAttrs} /></svg></div>`;
+      }
+
+      const fillStyle = element.fillCss ? `--pptx-text-fill:${element.fillCss};` : "";
+      const vAlign = element.vertical ? `--pptx-text-v:${element.vertical};` : "";
+      const textCss = element.textCss ? `${element.textCss};` : "";
+      return `<div class="pptx-el pptx-text" style="${pptxInlineBoxStyle(element.box, presentationSize)}${fillStyle}${vAlign}${textCss}">${element.htmlParagraphs || ""}</div>`;
+    }).join("");
+
+    const fallbackBody = !model.elements.length
+      ? `<div class="pptx-fallback">${model.fallbackParagraphs.map((line) => `<p>${escHtml(line)}</p>`).join("") || "<p>[No text content found on this slide]</p>"}</div>`
+      : "";
+
+    slides.push({
+      number: i + 1,
+      title: model.title,
+      elementsHtml,
+      fallbackBody,
+      background: model.background
+    });
+  }
+
+  const slideMarkup = slides.map((slide) => `
+    <section class="pptx-slide">
+      <div class="pptx-slide-kicker">Slide ${slide.number}</div>
+      <h2>${escHtml(slide.title)}</h2>
+      <div class="pptx-stage" style="height:${stageHeight}px${slide.background ? `;--pptx-slide-bg:${slide.background}` : ""}">
+        ${slide.elementsHtml}
+      </div>
+      ${slide.fallbackBody}
+    </section>
+  `).join("\n");
+
+  const extraStyles = `
+    body {
+      max-width: none;
+      padding: 28px 32px;
+      background: #f4f6fb;
+    }
+    .pptx-slides {
+      display: grid;
+      gap: 18px;
+    }
+    .pptx-slide {
+      min-height: auto;
+      padding: 28px 30px;
+      border: 1px solid #d7dbe7;
+      border-radius: 18px;
+      background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+      box-shadow: 0 12px 36px rgba(29, 37, 59, 0.08);
+      break-after: page;
+      page-break-after: always;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    .pptx-slide:last-child {
+      break-after: auto;
+      page-break-after: auto;
+    }
+    .pptx-slide-kicker {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.74rem;
+      color: #6b7280;
+      margin-bottom: 0.5rem;
+    }
+    .pptx-slide h2 {
+      margin-top: 0;
+      font-size: 1.35rem;
+    }
+    .pptx-stage {
+      position: relative;
+      width: 100%;
+      background: var(--pptx-slide-bg, #ffffff);
+      border: 1px solid #e3e7f0;
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px rgba(225, 231, 242, 0.4);
+    }
+    .pptx-el {
+      position: absolute;
+      box-sizing: border-box;
+    }
+    .pptx-image {
+      padding: 0.2%;
+    }
+    .pptx-image img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .pptx-text {
+      padding-top: var(--pptx-tx-pad-top, 0.8%);
+      padding-right: var(--pptx-tx-pad-right, 1%);
+      padding-bottom: var(--pptx-tx-pad-bottom, 0.8%);
+      padding-left: var(--pptx-tx-pad-left, 1%);
+      overflow: auto;
+      overflow-x: var(--pptx-tx-overflow-x, auto);
+      overflow-y: var(--pptx-tx-overflow-y, auto);
+      font-size: calc(clamp(11px, 1.45vw, 25px) * var(--pptx-font-scale, 1));
+      line-height: 1.25;
+      color: #111827;
+      background: var(--pptx-text-fill, transparent);
+      border: var(--pptx-shape-border, none);
+      border-radius: var(--pptx-shape-radius, 0);
+      clip-path: var(--pptx-shape-clip, none);
+      white-space: var(--pptx-tx-wrap, normal);
+      word-break: break-word;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+    }
+    .pptx-text[style*="--pptx-text-v:middle"] {
+      justify-content: center;
+    }
+    .pptx-text[style*="--pptx-text-v:bottom"] {
+      justify-content: flex-end;
+    }
+    .pptx-text p {
+      margin: 0 0 0.35em;
+    }
+    .pptx-text p:last-child {
+      margin-bottom: 0;
+    }
+    .pptx-fallback {
+      margin-top: 0.9rem;
+      padding-top: 0.75rem;
+      border-top: 1px dashed #d7dbe7;
+      color: #4b5563;
+      font-size: 0.92rem;
+    }
+    .pptx-fallback p {
+      margin: 0.35rem 0;
+    }
+    .pptx-table {
+      overflow: hidden;
+      background: var(--pptx-table-fill, rgba(255, 255, 255, 0.95));
+    }
+    .pptx-table table {
+      width: 100%;
+      height: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: clamp(10px, 1.05vw, 15px);
+      color: #1f2937;
+    }
+    .pptx-table td {
+      border: 1px solid #94a3b8;
+      padding: 4px 6px;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+      background-clip: padding-box;
+    }
+    .pptx-line {
+      background: transparent;
+      overflow: visible;
+    }
+    .pptx-line svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      color: var(--pptx-line-color, #4b5563);
+    }
+    .pptx-line line {
+      stroke: var(--pptx-line-color, #4b5563);
+      stroke-width: var(--pptx-line-width, 1.5pt);
+      stroke-linecap: round;
+      vector-effect: non-scaling-stroke;
+      fill: none;
+    }
+  `;
+
+  return htmlDoc(
+    filename,
+    `PowerPoint presentation · ${slides.length} slide${slides.length === 1 ? "" : "s"}`,
+    `<div class="pptx-slides">${slideMarkup}</div>`,
+    extraStyles
+  );
 }
 
 export async function xlsxToHtml(buffer, filename) {

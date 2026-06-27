@@ -15,6 +15,10 @@
     renderPdfPreviewPage,
     addPdfImageWatermark,
     addPdfTextWatermark,
+    addPdfAnnotations,
+    extractPdfTextForRichEditor,
+    extractPdfTextBlocks,
+    richEditorHtmlToPdf,
     applyPdfMetadata,
     getPdfPageCount,
     summarizeCustomSplitSelection,
@@ -40,6 +44,7 @@
   } from "../js/pdf-security.js";
   import { applyOutputNamingTemplate } from "../js/output-naming.js";
   import { formatBytes } from "../js/detect.js";
+  import "quill/dist/quill.snow.css";
 
   export let files = [];
   export let busy = false;
@@ -132,6 +137,58 @@
   let textWatermarkRotation = "-28";
   let textWatermarkPosition = "center";
   let textWatermarkColor = "#6b7280";
+  let editorSelection = "";
+  let editorTextValue = "Reviewed";
+  let editorTextX = "12";
+  let editorTextY = "14";
+  let editorTextSize = "18";
+  let editorTextColor = "#111827";
+  let editorTextOpacity = "100";
+  let editorStrokePoints = "10,82 24,76 38,84";
+  let editorStrokeColor = "#f59e0b";
+  let editorStrokeWidth = "0.45";
+  let editorStrokeOpacity = "70";
+  let editorImageFile = null;
+  let editorImageX = "70";
+  let editorImageY = "74";
+  let editorImageWidth = "20";
+  let editorImageHeight = "10";
+  let editorImageOpacity = "100";
+  let editorSelectionError = "";
+  let editorTargetPages = [];
+  let editorAnnotationsByPage = {};
+  let editorHistory = [];
+  let editorHistoryIndex = -1;
+  let richEditorHost = null;
+  let richEditor = null;
+  let richEditorLoading = false;
+  let richEditorReady = false;
+  let richEditorDirty = false;
+  let richEditorError = "";
+  let richEditorStatus = "";
+  let richEditorAutosaveEnabled = true;
+  let richEditorAutosavePending = false;
+  let richEditorAutosaveBusy = false;
+  let richEditorLastSavedAt = "";
+  let richEditorSaveDebounceMs = "1200";
+  let richEditorSourceName = "";
+  let richEditorFileHandle = null;
+  let richEditorAutosaveTimer = null;
+  let textLayerLoaded = false;
+  let textLayerLoading = false;
+  let textLayerError = "";
+  let textLayerStatus = "";
+  let textLayerBlocksByPage = {};
+  let textLayerPreviewUrl = "";
+  let textLayerPreviewLoading = false;
+  let textLayerStageEl = null;
+  let textLayerActiveBlockId = "";
+  let textLayerDragState = null;
+  let activeTextLayerBlock = null;
+  let textLayerSelectedBlockIds = [];
+  let textLayerSnapEnabled = true;
+  let textLayerSnapStep = "1";
+  let textLayerKeyboardBound = false;
 
   const dispatch = createEventDispatcher();
 
@@ -205,6 +262,11 @@
       ...extras
     });
     dispatch("output", named);
+  }
+
+  function openFullPdfEditor() {
+    if (!files.length || busy) return;
+    dispatch("openlayouteditor", { file: files[0] });
   }
 
   function generateSuggestedPassword() {
@@ -311,6 +373,33 @@
       watermarkSelectionError = "";
       watermarkPlacementMap = {};
       initWatermarkPlacementHistory();
+      editorSelection = "";
+      editorSelectionError = "";
+      editorTargetPages = [];
+      editorAnnotationsByPage = {};
+      initEditorHistory();
+      richEditorSourceName = "";
+      richEditorReady = false;
+      richEditorDirty = false;
+      richEditorError = "";
+      richEditorStatus = "";
+      richEditorLastSavedAt = "";
+      richEditorFileHandle = null;
+      clearRichEditorAutosaveTimer();
+      if (richEditor) {
+        richEditor.setContents([]);
+      }
+      textLayerLoaded = false;
+      textLayerLoading = false;
+      textLayerError = "";
+      textLayerStatus = "";
+      textLayerBlocksByPage = {};
+      textLayerPreviewUrl = "";
+      textLayerPreviewLoading = false;
+      textLayerActiveBlockId = "";
+      textLayerDragState = null;
+      textLayerSelectedBlockIds = [];
+      unbindTextLayerKeyboard();
     }
     if (nextKey !== pageOrderFileKey) {
       pageOrderFileKey = nextKey;
@@ -347,6 +436,33 @@
     watermarkTargetPages = [];
     watermarkPlacementMap = {};
     initWatermarkPlacementHistory();
+    editorSelection = "";
+    editorSelectionError = "";
+    editorTargetPages = [];
+    editorAnnotationsByPage = {};
+    initEditorHistory();
+    richEditorSourceName = "";
+    richEditorReady = false;
+    richEditorDirty = false;
+    richEditorError = "";
+    richEditorStatus = "";
+    richEditorLastSavedAt = "";
+    richEditorFileHandle = null;
+    clearRichEditorAutosaveTimer();
+    if (richEditor) {
+      richEditor.setContents([]);
+    }
+    textLayerLoaded = false;
+    textLayerLoading = false;
+    textLayerError = "";
+    textLayerStatus = "";
+    textLayerBlocksByPage = {};
+    textLayerPreviewUrl = "";
+    textLayerPreviewLoading = false;
+    textLayerActiveBlockId = "";
+    textLayerDragState = null;
+    textLayerSelectedBlockIds = [];
+    unbindTextLayerKeyboard();
   }
 
   $: if (files.length > 0 && previewFileKey) {
@@ -430,19 +546,33 @@
     previewError = "";
     previewFallbackNote = "";
 
-    if (!previewBlobUrl || previewBlobFileKey !== fileKey) {
-      if (previewBlobUrl) {
-        URL.revokeObjectURL(previewBlobUrl);
+    try {
+      const result = await renderPdfPreviewPage(fileEntry, { page, scale: 1.2 });
+      if (requestId !== previewRequestId) return;
+
+      previewUrl = result.dataUrl;
+      previewRenderMode = "image";
+      previewPage = result.page;
+      previewTotalPages = result.totalPages;
+      previewFallbackNote = "";
+    } catch {
+      if (requestId !== previewRequestId) return;
+
+      if (!previewBlobUrl || previewBlobFileKey !== fileKey) {
+        if (previewBlobUrl) {
+          URL.revokeObjectURL(previewBlobUrl);
+        }
+        previewBlobUrl = URL.createObjectURL(fileEntry.file);
+        previewBlobFileKey = fileKey;
       }
-      previewBlobUrl = URL.createObjectURL(fileEntry.file);
-      previewBlobFileKey = fileKey;
-    }
-    previewUrl = previewBlobUrl;
-    previewRenderMode = "pdf";
-    previewFallbackNote = "Showing embedded PDF preview.";
-    previewWrapRef?.scrollIntoView({ behavior: "smooth", block: "start" });
-    if (requestId === previewRequestId) {
-      previewLoading = false;
+      previewUrl = previewBlobUrl;
+      previewRenderMode = "pdf";
+      previewFallbackNote = "Page image preview is unavailable, showing embedded PDF preview.";
+    } finally {
+      previewWrapRef?.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (requestId === previewRequestId) {
+        previewLoading = false;
+      }
     }
   }
 
@@ -863,6 +993,712 @@
     probe.src = watermarkImageUrl;
   }
 
+  function onEditorImagePicked(event) {
+    const nextFile = event.currentTarget?.files?.[0];
+    editorImageFile = nextFile || null;
+  }
+
+  async function ensureRichEditor() {
+    if (richEditor) {
+      richEditorReady = true;
+      return richEditor;
+    }
+    if (!richEditorHost) {
+      throw new Error("Editor surface is not ready yet.");
+    }
+
+    const { default: Quill } = await import("quill");
+    richEditor = new Quill(richEditorHost, {
+      theme: "snow",
+      placeholder: "Extract PDF content to begin editing...",
+      modules: {
+        toolbar: [
+          [{ header: [1, 2, 3, false] }],
+          ["bold", "italic", "underline", "strike"],
+          [{ list: "ordered" }, { list: "bullet" }],
+          [{ align: [] }],
+          [{ color: [] }, { background: [] }],
+          ["blockquote", "code-block"],
+          ["clean"]
+        ]
+      }
+    });
+
+    richEditor.on("text-change", () => {
+      richEditorDirty = true;
+      richEditorStatus = "Unsaved changes";
+      if (richEditorAutosaveEnabled) {
+        scheduleRichEditorAutosave();
+      }
+    });
+
+    richEditorReady = true;
+    return richEditor;
+  }
+
+  function getRichEditorHtml() {
+    if (!richEditor) return "";
+    const html = `${richEditor.root?.innerHTML || ""}`.trim();
+    if (!html || html === "<p><br></p>") return "<p></p>";
+    return html;
+  }
+
+  function clearRichEditorAutosaveTimer() {
+    if (!richEditorAutosaveTimer) return;
+    clearTimeout(richEditorAutosaveTimer);
+    richEditorAutosaveTimer = null;
+  }
+
+  function scheduleRichEditorAutosave() {
+    clearRichEditorAutosaveTimer();
+    richEditorAutosavePending = true;
+    const waitMs = Math.max(500, Number.parseInt(richEditorSaveDebounceMs, 10) || 1200);
+    richEditorAutosaveTimer = setTimeout(() => {
+      void saveRichEditorPdf({ silentResult: true, autosave: true });
+    }, waitMs);
+  }
+
+  async function writeRichEditorToFileHandle(blob) {
+    if (!richEditorFileHandle) return false;
+    const stream = await richEditorFileHandle.createWritable();
+    await stream.write(blob);
+    await stream.close();
+    return true;
+  }
+
+  async function enableRichEditorInstantSave() {
+    if (typeof window === "undefined" || typeof window.showSaveFilePicker !== "function") {
+      richEditorError = "Instant file save requires File System Access API support in your browser.";
+      return;
+    }
+
+    const suggested = `${(files[0]?.name || "document").replace(/\.pdf$/i, "")}-edited.pdf`;
+    richEditorFileHandle = await window.showSaveFilePicker({
+      suggestedName: suggested,
+      types: [{
+        description: "PDF documents",
+        accept: { "application/pdf": [".pdf"] }
+      }]
+    });
+    richEditorStatus = "Instant file save enabled";
+    richEditorError = "";
+  }
+
+  async function extractIntoRichEditor() {
+    if (!files.length || busy) return;
+    richEditorLoading = true;
+    richEditorError = "";
+    richEditorStatus = "Extracting PDF text...";
+    dispatch("processing", true);
+    dispatch("progress", 8);
+
+    try {
+      const extraction = await extractPdfTextForRichEditor(files[0], (v) => dispatch("progress", v));
+      const instance = await ensureRichEditor();
+      instance.setContents([]);
+      instance.clipboard.dangerouslyPasteHTML(extraction.html);
+      richEditorSourceName = files[0].name;
+      richEditorDirty = false;
+      richEditorAutosavePending = false;
+      richEditorStatus = `Loaded ${extraction.totalPages} page${extraction.totalPages === 1 ? "" : "s"} into editor`;
+      dispatch("progress", 100);
+    } catch (error) {
+      richEditorError = error?.message || "Failed to extract PDF text.";
+      dispatch("error", richEditorError);
+    } finally {
+      richEditorLoading = false;
+      dispatch("processing", false);
+    }
+  }
+
+  async function saveRichEditorPdf({ silentResult = false, autosave = false } = {}) {
+    if (!richEditor || !files.length) return;
+    const html = getRichEditorHtml();
+    if (!html.trim()) {
+      richEditorError = "Editor is empty. Extract or add content before saving.";
+      return;
+    }
+
+    richEditorAutosaveBusy = autosave;
+    richEditorAutosavePending = false;
+    clearRichEditorAutosaveTimer();
+    dispatch("progress", 12);
+
+    try {
+      const blob = await richEditorHtmlToPdf(html, (v) => dispatch("progress", v));
+      const base = (richEditorSourceName || files[0].name || "document").replace(/\.pdf$/i, "");
+      const outputName = `${base}-wysiwyg-edited.pdf`;
+
+      const wroteToFile = await writeRichEditorToFileHandle(blob);
+      if (!silentResult && !wroteToFile) {
+        emitTemplatedOutputs("rich-edit", [{ name: outputName, blob }]);
+      }
+
+      richEditorDirty = false;
+      richEditorLastSavedAt = new Date().toLocaleTimeString();
+      if (wroteToFile) {
+        richEditorStatus = `Saved to selected file at ${richEditorLastSavedAt}`;
+      } else if (silentResult) {
+        richEditorStatus = `Autosave processed at ${richEditorLastSavedAt}. Enable Instant Save To File for direct file writes.`;
+      } else {
+        richEditorStatus = `Saved output at ${richEditorLastSavedAt}`;
+      }
+      richEditorError = "";
+      dispatch("progress", 100);
+    } catch (error) {
+      richEditorError = error?.message || "Failed to save editor output as PDF.";
+      dispatch("error", richEditorError);
+    } finally {
+      richEditorAutosaveBusy = false;
+    }
+  }
+
+  function cloneTextLayerBlocks(map) {
+    const clone = {};
+    for (const [pageKey, blocks] of Object.entries(map || {})) {
+      clone[pageKey] = Array.isArray(blocks)
+        ? blocks.map((block) => ({ ...block }))
+        : [];
+    }
+    return clone;
+  }
+
+  function getCurrentPageTextBlocks() {
+    return textLayerBlocksByPage[String(previewPage)] || [];
+  }
+
+  function getActiveTextBlock() {
+    if (!textLayerActiveBlockId) return null;
+    return getCurrentPageTextBlocks().find((block) => block.id === textLayerActiveBlockId) || null;
+  }
+
+  function getSelectedTextBlockIds() {
+    return textLayerSelectedBlockIds.length > 0
+      ? [...textLayerSelectedBlockIds]
+      : (textLayerActiveBlockId ? [textLayerActiveBlockId] : []);
+  }
+
+  function getSelectedTextBlocks() {
+    const ids = new Set(getSelectedTextBlockIds());
+    return getCurrentPageTextBlocks().filter((block) => ids.has(block.id));
+  }
+
+  function normalizeSnapStep() {
+    const stepPercent = Number.parseFloat(textLayerSnapStep);
+    const stepNorm = Number.isFinite(stepPercent) ? stepPercent / 100 : 0.01;
+    return clamp(stepNorm, 0.001, 0.25);
+  }
+
+  function maybeSnapNorm(value) {
+    const clamped = clamp(value, 0, 1);
+    if (!textLayerSnapEnabled) return clamped;
+    const step = normalizeSnapStep();
+    return clamp(Math.round(clamped / step) * step, 0, 1);
+  }
+
+  function updateCurrentPageTextBlock(blockId, patch) {
+    const key = String(previewPage);
+    const current = textLayerBlocksByPage[key] || [];
+    const next = current.map((block) => (block.id === blockId ? { ...block, ...patch } : block));
+    textLayerBlocksByPage = {
+      ...textLayerBlocksByPage,
+      [key]: next
+    };
+  }
+
+  function updateCurrentPageTextBlocks(blockIds, patchResolver) {
+    const ids = new Set(blockIds || []);
+    if (ids.size < 1) return;
+    const key = String(previewPage);
+    const current = textLayerBlocksByPage[key] || [];
+    const next = current.map((block) => {
+      if (!ids.has(block.id)) return block;
+      return { ...block, ...patchResolver(block) };
+    });
+    textLayerBlocksByPage = {
+      ...textLayerBlocksByPage,
+      [key]: next
+    };
+  }
+
+  function updateActiveTextBlockField(field, value) {
+    const active = getActiveTextBlock();
+    if (!active) return;
+    if (field === "text") {
+      updateCurrentPageTextBlock(active.id, { text: `${value || ""}` });
+      return;
+    }
+    const parsed = Number.parseFloat(value);
+    if (!Number.isFinite(parsed)) return;
+    if (field === "x" || field === "y") {
+      updateCurrentPageTextBlock(active.id, { [field]: maybeSnapNorm(parsed / 100) });
+      return;
+    }
+    if (field === "size") {
+      updateCurrentPageTextBlock(active.id, { size: clamp(parsed, 8, 72) });
+      return;
+    }
+    if (field === "opacity") {
+      updateCurrentPageTextBlock(active.id, { opacity: clamp(parsed / 100, 0, 1) });
+      return;
+    }
+  }
+
+  async function loadTextLayerPreview() {
+    if (!files.length || !textLayerLoaded) return;
+    textLayerPreviewLoading = true;
+    try {
+      const result = await renderPdfPreviewPage(files[0], { page: previewPage, scale: 1.2 });
+      textLayerPreviewUrl = result.dataUrl;
+    } catch (error) {
+      textLayerError = error?.message || "Could not render text-layer preview.";
+    } finally {
+      textLayerPreviewLoading = false;
+    }
+  }
+
+  async function loadTextLayerEditor() {
+    if (!files.length || busy) return;
+    textLayerLoading = true;
+    textLayerError = "";
+    textLayerStatus = "Extracting positioned text blocks...";
+    dispatch("processing", true);
+    dispatch("progress", 10);
+
+    try {
+      const result = await extractPdfTextBlocks(files[0], { maxPerPage: 320 }, (v) => dispatch("progress", v));
+      textLayerBlocksByPage = cloneTextLayerBlocks(result.blocksByPage || {});
+      textLayerLoaded = true;
+      textLayerStatus = `Loaded ${result.totalPages} page${result.totalPages === 1 ? "" : "s"} for draggable text editing.`;
+      textLayerActiveBlockId = "";
+      textLayerSelectedBlockIds = [];
+      bindTextLayerKeyboard();
+      await loadTextLayerPreview();
+      dispatch("progress", 100);
+    } catch (error) {
+      textLayerError = error?.message || "Failed to load text layer editor.";
+      dispatch("error", textLayerError);
+    } finally {
+      textLayerLoading = false;
+      dispatch("processing", false);
+    }
+  }
+
+  function beginTextBlockDrag(event, blockId) {
+    if (!textLayerStageEl || busy) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+
+    const block = getCurrentPageTextBlocks().find((item) => item.id === blockId);
+    if (!block) return;
+
+    const rect = textLayerStageEl.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return;
+
+    if (event.shiftKey) {
+      const exists = textLayerSelectedBlockIds.includes(blockId);
+      textLayerSelectedBlockIds = exists
+        ? textLayerSelectedBlockIds.filter((id) => id !== blockId)
+        : [...textLayerSelectedBlockIds, blockId];
+    } else if (!textLayerSelectedBlockIds.includes(blockId)) {
+      textLayerSelectedBlockIds = [blockId];
+    }
+
+    textLayerActiveBlockId = blockId;
+    const selectedIds = getSelectedTextBlockIds();
+    const selected = getCurrentPageTextBlocks().filter((item) => selectedIds.includes(item.id));
+    const baseMap = Object.fromEntries(selected.map((item) => [item.id, { x: item.x, y: item.y }]));
+
+    textLayerDragState = {
+      blockId,
+      blockIds: selectedIds,
+      baseMap,
+      startX: event.clientX,
+      startY: event.clientY,
+      width: rect.width,
+      height: rect.height
+    };
+
+    event.currentTarget?.setPointerCapture?.(event.pointerId);
+    window.addEventListener("pointermove", onTextBlockDragMove);
+    window.addEventListener("pointerup", endTextBlockDrag);
+    window.addEventListener("pointercancel", endTextBlockDrag);
+  }
+
+  function onTextBlockDragMove(event) {
+    if (!textLayerDragState) return;
+    const deltaX = (event.clientX - textLayerDragState.startX) / textLayerDragState.width;
+    const deltaY = (event.clientY - textLayerDragState.startY) / textLayerDragState.height;
+    updateCurrentPageTextBlocks(textLayerDragState.blockIds, (block) => {
+      const base = textLayerDragState.baseMap[block.id] || { x: block.x, y: block.y };
+      return {
+        x: maybeSnapNorm(base.x + deltaX),
+        y: maybeSnapNorm(base.y + deltaY)
+      };
+    });
+  }
+
+  function endTextBlockDrag() {
+    textLayerDragState = null;
+    window.removeEventListener("pointermove", onTextBlockDragMove);
+    window.removeEventListener("pointerup", endTextBlockDrag);
+    window.removeEventListener("pointercancel", endTextBlockDrag);
+  }
+
+  function removeActiveTextBlock() {
+    const active = getActiveTextBlock();
+    if (!active) return;
+    const key = String(previewPage);
+    const current = textLayerBlocksByPage[key] || [];
+    textLayerBlocksByPage = {
+      ...textLayerBlocksByPage,
+      [key]: current.filter((block) => block.id !== active.id)
+    };
+    textLayerActiveBlockId = "";
+    textLayerSelectedBlockIds = [];
+  }
+
+  function removeSelectedTextBlocks() {
+    const selectedIds = new Set(getSelectedTextBlockIds());
+    if (selectedIds.size < 1) return;
+    const key = String(previewPage);
+    const current = textLayerBlocksByPage[key] || [];
+    textLayerBlocksByPage = {
+      ...textLayerBlocksByPage,
+      [key]: current.filter((block) => !selectedIds.has(block.id))
+    };
+    textLayerActiveBlockId = "";
+    textLayerSelectedBlockIds = [];
+  }
+
+  function nudgeSelectedTextBlocks(dx, dy, event = null) {
+    const selectedIds = getSelectedTextBlockIds();
+    if (selectedIds.length < 1) return;
+    const baseStep = normalizeSnapStep();
+    const multiplier = event?.shiftKey ? 5 : 1;
+    const step = baseStep * multiplier;
+
+    updateCurrentPageTextBlocks(selectedIds, (block) => ({
+      x: maybeSnapNorm(block.x + (dx * step)),
+      y: maybeSnapNorm(block.y + (dy * step))
+    }));
+  }
+
+  function handleTextLayerKeydown(event) {
+    if (!textLayerLoaded || busy) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) {
+      return;
+    }
+
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      nudgeSelectedTextBlocks(-1, 0, event);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      nudgeSelectedTextBlocks(1, 0, event);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      nudgeSelectedTextBlocks(0, -1, event);
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      nudgeSelectedTextBlocks(0, 1, event);
+    } else if (event.key === "Delete" || event.key === "Backspace") {
+      event.preventDefault();
+      removeSelectedTextBlocks();
+    }
+  }
+
+  function bindTextLayerKeyboard() {
+    if (textLayerKeyboardBound) return;
+    window.addEventListener("keydown", handleTextLayerKeydown);
+    textLayerKeyboardBound = true;
+  }
+
+  function unbindTextLayerKeyboard() {
+    if (!textLayerKeyboardBound) return;
+    window.removeEventListener("keydown", handleTextLayerKeydown);
+    textLayerKeyboardBound = false;
+  }
+
+  function countTextLayerBlocks() {
+    return Object.values(textLayerBlocksByPage).reduce((sum, blocks) => sum + (Array.isArray(blocks) ? blocks.length : 0), 0);
+  }
+
+  function onTextBlockClick(event, blockId) {
+    if (event.shiftKey) {
+      const exists = textLayerSelectedBlockIds.includes(blockId);
+      textLayerSelectedBlockIds = exists
+        ? textLayerSelectedBlockIds.filter((id) => id !== blockId)
+        : [...textLayerSelectedBlockIds, blockId];
+    } else {
+      textLayerSelectedBlockIds = [blockId];
+    }
+    textLayerActiveBlockId = blockId;
+  }
+
+  async function saveTextLayerPdf() {
+    if (!files.length || countTextLayerBlocks() < 1) {
+      dispatch("error", "Load and adjust text blocks before saving.");
+      return;
+    }
+
+    dispatch("processing", true);
+    dispatch("progress", 10);
+    textLayerError = "";
+    try {
+      const annotationsByPage = {};
+      for (const [pageKey, blocks] of Object.entries(textLayerBlocksByPage)) {
+        const pageTexts = (blocks || [])
+          .map((block) => ({
+            text: `${block.text || ""}`.trim(),
+            x: clamp(Number.parseFloat(block.x), 0, 1),
+            y: clamp(Number.parseFloat(block.y), 0, 1),
+            size: clamp(Number.parseFloat(block.size), 8, 72),
+            colorHex: block.colorHex || "#111827",
+            opacity: clamp(Number.parseFloat(block.opacity ?? 1), 0, 1)
+          }))
+          .filter((item) => !!item.text);
+
+        if (pageTexts.length > 0) {
+          annotationsByPage[pageKey] = { texts: pageTexts };
+        }
+      }
+
+      const blob = await addPdfAnnotations(
+        files[0],
+        {
+          selection: "",
+          annotationsByPage
+        },
+        (v) => dispatch("progress", v)
+      );
+
+      emitTemplatedOutputs("text-layer-edit", [{
+        name: `${files[0].name.replace(/\.pdf$/i, "")}-layout-edited.pdf`,
+        blob
+      }]);
+      textLayerStatus = "Saved positioned text layer into PDF output.";
+      dispatch("progress", 100);
+    } catch (error) {
+      textLayerError = error?.message || "Failed to save positioned text layer.";
+      dispatch("error", textLayerError);
+    } finally {
+      dispatch("processing", false);
+    }
+  }
+
+  function cloneEditorAnnotationMap(map) {
+    const clone = {};
+    for (const [pageKey, set] of Object.entries(map || {})) {
+      clone[pageKey] = {
+        texts: Array.isArray(set?.texts) ? set.texts.map((item) => ({ ...item })) : [],
+        strokes: Array.isArray(set?.strokes)
+          ? set.strokes.map((item) => ({
+              ...item,
+              points: Array.isArray(item?.points) ? item.points.map((point) => ({ ...point })) : []
+            }))
+          : [],
+        images: Array.isArray(set?.images) ? set.images.map((item) => ({ ...item })) : []
+      };
+    }
+    return clone;
+  }
+
+  function initEditorHistory() {
+    const snapshot = cloneEditorAnnotationMap(editorAnnotationsByPage);
+    editorHistory = [snapshot];
+    editorHistoryIndex = 0;
+  }
+
+  function pushEditorHistory(nextMap) {
+    const prior = editorHistory.slice(0, editorHistoryIndex + 1);
+    prior.push(cloneEditorAnnotationMap(nextMap));
+    const limit = 120;
+    const trimmed = prior.length > limit ? prior.slice(prior.length - limit) : prior;
+    editorHistory = trimmed;
+    editorHistoryIndex = trimmed.length - 1;
+  }
+
+  function undoEditorChange() {
+    if (editorHistoryIndex <= 0) return;
+    editorHistoryIndex -= 1;
+    editorAnnotationsByPage = cloneEditorAnnotationMap(editorHistory[editorHistoryIndex] || {});
+  }
+
+  function redoEditorChange() {
+    if (editorHistoryIndex < 0 || editorHistoryIndex >= editorHistory.length - 1) return;
+    editorHistoryIndex += 1;
+    editorAnnotationsByPage = cloneEditorAnnotationMap(editorHistory[editorHistoryIndex] || {});
+  }
+
+  function resolveEditorPages() {
+    if (editorTargetPages.length > 0) return editorTargetPages;
+    if (previewPage > 0) return [previewPage];
+    return [1];
+  }
+
+  function updateEditorAnnotationsByPage(mutator) {
+    const draft = cloneEditorAnnotationMap(editorAnnotationsByPage);
+    mutator(draft);
+    editorAnnotationsByPage = draft;
+    pushEditorHistory(draft);
+  }
+
+  function ensureEditorSet(draft, pageNum) {
+    const key = String(pageNum);
+    if (!draft[key]) {
+      draft[key] = { texts: [], strokes: [], images: [] };
+    }
+    if (!Array.isArray(draft[key].texts)) draft[key].texts = [];
+    if (!Array.isArray(draft[key].strokes)) draft[key].strokes = [];
+    if (!Array.isArray(draft[key].images)) draft[key].images = [];
+    return draft[key];
+  }
+
+  function addEditorTextAnnotation() {
+    const text = `${editorTextValue || ""}`.trim();
+    if (!text) {
+      dispatch("error", "Enter annotation text before adding.");
+      return;
+    }
+
+    const nextItem = {
+      text,
+      x: clamp(Number.parseFloat(editorTextX) / 100, 0, 1),
+      y: clamp(Number.parseFloat(editorTextY) / 100, 0, 1),
+      size: Number.parseFloat(editorTextSize),
+      colorHex: editorTextColor,
+      opacity: clamp(Number.parseFloat(editorTextOpacity) / 100, 0, 1)
+    };
+
+    updateEditorAnnotationsByPage((draft) => {
+      for (const pageNum of resolveEditorPages()) {
+        const set = ensureEditorSet(draft, pageNum);
+        set.texts.push({ ...nextItem });
+      }
+    });
+  }
+
+  function addEditorStrokeAnnotation() {
+    let strokePoints = [];
+    try {
+      strokePoints = parseEditorStrokePoints(editorStrokePoints);
+    } catch (error) {
+      dispatch("error", error?.message || "Invalid stroke points.");
+      return;
+    }
+    if (strokePoints.length < 2) {
+      dispatch("error", "Provide at least two stroke points.");
+      return;
+    }
+
+    const nextItem = {
+      points: strokePoints,
+      colorHex: editorStrokeColor,
+      width: clamp(Number.parseFloat(editorStrokeWidth) / 100, 0.0005, 0.05),
+      opacity: clamp(Number.parseFloat(editorStrokeOpacity) / 100, 0, 1)
+    };
+
+    updateEditorAnnotationsByPage((draft) => {
+      for (const pageNum of resolveEditorPages()) {
+        const set = ensureEditorSet(draft, pageNum);
+        set.strokes.push({ ...nextItem, points: nextItem.points.map((p) => ({ ...p })) });
+      }
+    });
+  }
+
+  function addEditorImageAnnotation() {
+    if (!(editorImageFile instanceof Blob)) {
+      dispatch("error", "Pick a PNG or JPEG image before adding a stamp.");
+      return;
+    }
+
+    const nextItem = {
+      file: editorImageFile,
+      x: clamp(Number.parseFloat(editorImageX) / 100, 0, 1),
+      y: clamp(Number.parseFloat(editorImageY) / 100, 0, 1),
+      width: clamp(Number.parseFloat(editorImageWidth) / 100, 0.02, 1),
+      height: clamp(Number.parseFloat(editorImageHeight) / 100, 0.02, 1),
+      opacity: clamp(Number.parseFloat(editorImageOpacity) / 100, 0, 1)
+    };
+
+    updateEditorAnnotationsByPage((draft) => {
+      for (const pageNum of resolveEditorPages()) {
+        const set = ensureEditorSet(draft, pageNum);
+        set.images.push({ ...nextItem });
+      }
+    });
+  }
+
+  function removeLastEditorAnnotation(type) {
+    const pageNum = previewPage || 1;
+    const key = String(pageNum);
+    const currentSet = editorAnnotationsByPage[key];
+    if (!currentSet) return;
+
+    const items = currentSet[type];
+    if (!Array.isArray(items) || items.length < 1) return;
+
+    updateEditorAnnotationsByPage((draft) => {
+      const set = ensureEditorSet(draft, pageNum);
+      set[type] = set[type].slice(0, -1);
+      if (set.texts.length < 1 && set.strokes.length < 1 && set.images.length < 1) {
+        delete draft[key];
+      }
+    });
+  }
+
+  function clearEditorAnnotationsForPages() {
+    const targetPages = resolveEditorPages();
+    updateEditorAnnotationsByPage((draft) => {
+      for (const pageNum of targetPages) {
+        delete draft[String(pageNum)];
+      }
+    });
+  }
+
+  function countEditorAnnotations() {
+    let total = 0;
+    for (const set of Object.values(editorAnnotationsByPage)) {
+      total += (set?.texts?.length || 0) + (set?.strokes?.length || 0) + (set?.images?.length || 0);
+    }
+    return total;
+  }
+
+  function editorPageAnnotationSummary(pageNum) {
+    const set = editorAnnotationsByPage[String(pageNum)];
+    if (!set) return "No queued annotations";
+    return `Text ${set.texts?.length || 0} · Strokes ${set.strokes?.length || 0} · Images ${set.images?.length || 0}`;
+  }
+
+  function parseEditorStrokePoints(value) {
+    const tokens = `${value || ""}`
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter(Boolean);
+
+    const points = [];
+    for (const token of tokens) {
+      const pair = token.split(",");
+      if (pair.length !== 2) {
+        throw new Error("Stroke points must use x,y pairs like 10,80 20,76 30,84.");
+      }
+
+      const x = Number.parseFloat(pair[0]);
+      const y = Number.parseFloat(pair[1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new Error("Stroke points require numeric x,y values.");
+      }
+      if (x < 0 || x > 100 || y < 0 || y > 100) {
+        throw new Error("Stroke point percentages must be between 0 and 100.");
+      }
+
+      points.push({ x: x / 100, y: y / 100 });
+    }
+
+    return points;
+  }
+
   function beginWatermarkPointer(event, mode) {
     if (!watermarkStageEl || !watermarkImageUrl) return;
     if (event.pointerType === "mouse" && event.button !== 0) return;
@@ -1131,9 +1967,36 @@
     }
   }
 
+  $: {
+    try {
+      editorTargetPages = parseWatermarkSelection(editorSelection, previewTotalPages || splitPageCount);
+      editorSelectionError = "";
+    } catch (error) {
+      editorTargetPages = [];
+      editorSelectionError = error.message || "Invalid page selection.";
+    }
+  }
+
   $: if (watermarkImageUrl && previewTotalPages > 0) {
     ensureWatermarkPlacement(previewPage);
   }
+
+  $: if (textLayerLoaded && files.length > 0 && previewPage > 0) {
+    void loadTextLayerPreview();
+  }
+
+  $: if (textLayerLoaded) {
+    const blockIds = new Set(getCurrentPageTextBlocks().map((block) => block.id));
+    const filtered = textLayerSelectedBlockIds.filter((id) => blockIds.has(id));
+    if (filtered.length !== textLayerSelectedBlockIds.length) {
+      textLayerSelectedBlockIds = filtered;
+    }
+    if (textLayerActiveBlockId && !blockIds.has(textLayerActiveBlockId)) {
+      textLayerActiveBlockId = filtered[0] || "";
+    }
+  }
+
+  $: activeTextLayerBlock = getActiveTextBlock();
 
   $: {
     previewUrl;
@@ -1152,6 +2015,9 @@
     if (watermarkImageUrl) {
       URL.revokeObjectURL(watermarkImageUrl);
     }
+    clearRichEditorAutosaveTimer();
+    endTextBlockDrag();
+    unbindTextLayerKeyboard();
     endWatermarkPointer();
   });
 
@@ -1302,6 +2168,27 @@
           name: `${files[0].name.replace(/\.pdf$/i, "")}-text-watermarked.pdf`,
           blob
         }]);
+      } else if (task === "edit-annotate") {
+        if (editorSelectionError) {
+          throw new Error(editorSelectionError);
+        }
+
+        if (countEditorAnnotations() < 1) {
+          throw new Error("Queue at least one annotation before exporting edited PDF.");
+        }
+
+        const blob = await addPdfAnnotations(
+          files[0],
+          {
+            selection: editorSelection,
+            annotationsByPage: editorAnnotationsByPage
+          },
+          (v) => dispatch("progress", v)
+        );
+        emitTemplatedOutputs("edit", [{
+          name: `${files[0].name.replace(/\.pdf$/i, "")}-edited.pdf`,
+          blob
+        }]);
       } else if (task === "metadata-batch") {
         const payload = {
           title: metadataTitle,
@@ -1415,6 +2302,7 @@
   </section>
 
   <div class="actions ops-primary" role="group" aria-label="Primary PDF actions">
+    <button type="button" on:click={openFullPdfEditor} disabled={busy || files.length < 1}>Open Full PDF Editor</button>
     <button type="button" on:click={() => run("split")} disabled={busy || files.length < 1}>Split PDF</button>
     <button type="button" on:click={() => run("merge")} disabled={busy || files.length < 2}>Merge PDFs</button>
     <button type="button" on:click={() => run("compress")} disabled={busy || files.length < 1}>Compress PDF</button>
@@ -1768,6 +2656,343 @@
       <div class="actions">
         <button class="secondary" on:click={() => run("number-pages")} disabled={busy || files.length < 1}>Add Page Numbers</button>
       </div>
+    </section>
+  </details>
+
+  <details class="advanced-subsection">
+    <summary>WYSIWYG PDF Text Editor</summary>
+    <section class="page-actions rich-editor-section">
+      <header>
+        <h4>Modern text editor</h4>
+        <span>Extract PDF text, edit freely, and save back to PDF</span>
+      </header>
+
+      <div class="actions">
+        <button class="secondary" type="button" on:click={extractIntoRichEditor} disabled={busy || files.length < 1 || richEditorLoading}>
+          {richEditorLoading ? "Extracting..." : "Extract PDF Into Editor"}
+        </button>
+        <button class="secondary" type="button" on:click={() => saveRichEditorPdf()} disabled={busy || !richEditorReady}>
+          Save PDF Now
+        </button>
+      </div>
+
+      <div class="actions">
+        <button class="secondary" type="button" on:click={enableRichEditorInstantSave} disabled={busy || files.length < 1 || !richEditorReady}>
+          Enable Instant Save To File
+        </button>
+      </div>
+
+      <label class="watermark-lock-toggle">
+        <input type="checkbox" bind:checked={richEditorAutosaveEnabled} />
+        <span>Autosave while typing</span>
+      </label>
+
+      <div class="number-grid">
+        <div>
+          <label for="pdf-rich-autosave-ms">Autosave debounce (ms)</label>
+          <input
+            id="pdf-rich-autosave-ms"
+            type="number"
+            min="500"
+            max="8000"
+            step="100"
+            bind:value={richEditorSaveDebounceMs}
+            disabled={!richEditorAutosaveEnabled}
+          />
+        </div>
+      </div>
+
+      {#if richEditorStatus}
+        <small>{richEditorStatus}</small>
+      {/if}
+      {#if richEditorError}
+        <small class="split-error">{richEditorError}</small>
+      {/if}
+      {#if richEditorLastSavedAt}
+        <small>Last saved at {richEditorLastSavedAt}</small>
+      {/if}
+      {#if richEditorAutosaveEnabled}
+        <small>Autosave state: {richEditorAutosaveBusy ? "saving..." : richEditorAutosavePending ? "pending" : richEditorDirty ? "dirty" : "clean"}</small>
+      {/if}
+
+      <div class="rich-editor-shell">
+        <div class="rich-editor-host" bind:this={richEditorHost}></div>
+      </div>
+
+      <small>Text-first extraction: complex layout, vector art, and form widgets are approximated in WYSIWYG mode.</small>
+    </section>
+  </details>
+
+  <details class="advanced-subsection">
+    <summary>Layout Text Layer Editor</summary>
+    <section class="page-actions text-layer-section">
+      <header>
+        <h4>Drag text on page preview</h4>
+        <span>Move extracted text blocks and save positioned output</span>
+      </header>
+
+      <div class="actions">
+        <button class="secondary" type="button" on:click={loadTextLayerEditor} disabled={busy || files.length < 1 || textLayerLoading}>
+          {textLayerLoading ? "Loading text layer..." : "Load Draggable Text Layer"}
+        </button>
+        <button class="secondary" type="button" on:click={saveTextLayerPdf} disabled={busy || !textLayerLoaded || countTextLayerBlocks() < 1}>
+          Save Positioned Text PDF
+        </button>
+      </div>
+
+      {#if textLayerStatus}
+        <small>{textLayerStatus}</small>
+      {/if}
+      {#if textLayerError}
+        <small class="split-error">{textLayerError}</small>
+      {/if}
+      {#if textLayerLoaded}
+        <small>Total draggable blocks: {countTextLayerBlocks()} · Current page blocks: {getCurrentPageTextBlocks().length}</small>
+        <small>Selected blocks: {getSelectedTextBlockIds().length || 0} · Shift+Click adds selection · Arrow keys nudge · Shift+Arrow nudges faster</small>
+      {/if}
+
+      <label class="watermark-lock-toggle">
+        <input type="checkbox" bind:checked={textLayerSnapEnabled} />
+        <span>Snap to grid while dragging and nudging</span>
+      </label>
+      <div class="number-grid">
+        <div>
+          <label for="pdf-text-layer-grid-step">Grid step (%)</label>
+          <input id="pdf-text-layer-grid-step" type="number" min="0.1" max="10" step="0.1" bind:value={textLayerSnapStep} disabled={!textLayerSnapEnabled} />
+        </div>
+      </div>
+
+      <div class="text-layer-stage" bind:this={textLayerStageEl}>
+        {#if textLayerPreviewLoading}
+          <p class="preview-message">Rendering page preview...</p>
+        {:else if textLayerPreviewUrl}
+          <img src={textLayerPreviewUrl} alt={`Text layer preview page ${previewPage}`} />
+          <div class="text-layer-overlay" aria-label="Draggable text layer">
+            {#each getCurrentPageTextBlocks() as block (block.id)}
+              <button
+                type="button"
+                class="text-layer-block"
+                class:is-active={block.id === textLayerActiveBlockId}
+                class:is-selected={textLayerSelectedBlockIds.includes(block.id)}
+                style={`left:${block.x * 100}%;top:${block.y * 100}%;font-size:${block.size}px;opacity:${block.opacity};color:${block.colorHex};`}
+                on:pointerdown={(event) => beginTextBlockDrag(event, block.id)}
+                on:click={(event) => onTextBlockClick(event, block.id)}
+                title={block.text}
+              >
+                {block.text}
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <p class="preview-message">Load text layer to start moving extracted text blocks.</p>
+        {/if}
+      </div>
+
+      {#if activeTextLayerBlock}
+        <header>
+          <h4>Selected block</h4>
+          <span>Page {previewPage}</span>
+        </header>
+        <label for="pdf-text-layer-text">Text</label>
+        <input id="pdf-text-layer-text" type="text" value={activeTextLayerBlock.text} on:input={(event) => updateActiveTextBlockField("text", event.currentTarget.value)} />
+        <div class="number-grid">
+          <div>
+            <label for="pdf-text-layer-x">X (%)</label>
+            <input id="pdf-text-layer-x" type="number" min="0" max="100" step="0.1" value={Math.round(activeTextLayerBlock.x * 1000) / 10} on:input={(event) => updateActiveTextBlockField("x", event.currentTarget.value)} />
+          </div>
+          <div>
+            <label for="pdf-text-layer-y">Y (%)</label>
+            <input id="pdf-text-layer-y" type="number" min="0" max="100" step="0.1" value={Math.round(activeTextLayerBlock.y * 1000) / 10} on:input={(event) => updateActiveTextBlockField("y", event.currentTarget.value)} />
+          </div>
+          <div>
+            <label for="pdf-text-layer-size">Size</label>
+            <input id="pdf-text-layer-size" type="number" min="8" max="72" step="1" value={activeTextLayerBlock.size} on:input={(event) => updateActiveTextBlockField("size", event.currentTarget.value)} />
+          </div>
+          <div>
+            <label for="pdf-text-layer-opacity">Opacity (%)</label>
+            <input id="pdf-text-layer-opacity" type="number" min="0" max="100" step="1" value={Math.round(activeTextLayerBlock.opacity * 100)} on:input={(event) => updateActiveTextBlockField("opacity", event.currentTarget.value)} />
+          </div>
+        </div>
+        <div class="actions">
+          <button class="secondary" type="button" on:click={removeActiveTextBlock}>Remove Selected Block</button>
+          <button class="secondary" type="button" on:click={removeSelectedTextBlocks} disabled={getSelectedTextBlockIds().length < 2}>Remove Selected Group</button>
+        </div>
+      {/if}
+      <small>Tip: drag blocks directly on the page, then fine-tune values for precise placement.</small>
+    </section>
+  </details>
+
+  <details class="advanced-subsection">
+    <summary>PDF Editor (Beta)</summary>
+    <section class="page-actions">
+      <header>
+        <h4>Annotation editor</h4>
+        <span>Queue page-aware text, strokes, and image signatures</span>
+      </header>
+      <label for="pdf-editor-selection">Page selection (optional)</label>
+      <input
+        id="pdf-editor-selection"
+        type="text"
+        bind:value={editorSelection}
+        placeholder="Empty = all pages"
+        disabled={busy}
+      />
+      {#if editorSelectionError}
+        <small class="split-error">{editorSelectionError}</small>
+      {:else}
+        <small>Target pages: {editorTargetPages.length || previewTotalPages || splitPageCount || 0}</small>
+      {/if}
+
+      <hr class="watermark-divider" />
+
+      <header>
+        <h4>Text annotation</h4>
+        <span>Coordinates are top-left percentages</span>
+      </header>
+      <label for="pdf-editor-text">Text</label>
+      <input id="pdf-editor-text" type="text" bind:value={editorTextValue} disabled={busy} />
+      <div class="number-grid">
+        <div>
+          <label for="pdf-editor-text-x">X (%)</label>
+          <input id="pdf-editor-text-x" type="number" min="0" max="100" step="0.1" bind:value={editorTextX} disabled={busy} />
+        </div>
+        <div>
+          <label for="pdf-editor-text-y">Y (%)</label>
+          <input id="pdf-editor-text-y" type="number" min="0" max="100" step="0.1" bind:value={editorTextY} disabled={busy} />
+        </div>
+        <div>
+          <label for="pdf-editor-text-size">Size</label>
+          <input id="pdf-editor-text-size" type="number" min="8" max="240" step="1" bind:value={editorTextSize} disabled={busy} />
+        </div>
+        <div>
+          <label for="pdf-editor-text-opacity">Opacity (%)</label>
+          <input id="pdf-editor-text-opacity" type="number" min="0" max="100" step="1" bind:value={editorTextOpacity} disabled={busy} />
+        </div>
+      </div>
+      <label for="pdf-editor-text-color">Text color</label>
+      <input id="pdf-editor-text-color" type="color" bind:value={editorTextColor} disabled={busy} />
+      <div class="actions">
+        <button class="secondary" type="button" on:click={addEditorTextAnnotation} disabled={busy || !!editorSelectionError}>
+          Add Text To Target Pages
+        </button>
+        <button class="secondary" type="button" on:click={() => removeLastEditorAnnotation("texts")} disabled={busy}>
+          Remove Last Text (Current Page)
+        </button>
+      </div>
+
+      <hr class="watermark-divider" />
+
+      <header>
+        <h4>Freehand/highlight stroke</h4>
+        <span>Point list format: x,y x,y x,y</span>
+      </header>
+      <label for="pdf-editor-stroke-points">Stroke points (%)</label>
+      <input
+        id="pdf-editor-stroke-points"
+        type="text"
+        bind:value={editorStrokePoints}
+        placeholder="Example: 10,82 24,76 38,84"
+        disabled={busy}
+      />
+      <div class="number-grid">
+        <div>
+          <label for="pdf-editor-stroke-width">Width (% of page width)</label>
+          <input id="pdf-editor-stroke-width" type="number" min="0.05" max="5" step="0.05" bind:value={editorStrokeWidth} disabled={busy} />
+        </div>
+        <div>
+          <label for="pdf-editor-stroke-opacity">Opacity (%)</label>
+          <input id="pdf-editor-stroke-opacity" type="number" min="0" max="100" step="1" bind:value={editorStrokeOpacity} disabled={busy} />
+        </div>
+      </div>
+      <label for="pdf-editor-stroke-color">Stroke color</label>
+      <input id="pdf-editor-stroke-color" type="color" bind:value={editorStrokeColor} disabled={busy} />
+      <div class="actions">
+        <button class="secondary" type="button" on:click={addEditorStrokeAnnotation} disabled={busy || !!editorSelectionError}>
+          Add Stroke To Target Pages
+        </button>
+        <button class="secondary" type="button" on:click={() => removeLastEditorAnnotation("strokes")} disabled={busy}>
+          Remove Last Stroke (Current Page)
+        </button>
+      </div>
+
+      <hr class="watermark-divider" />
+
+      <header>
+        <h4>Image signature/stamp</h4>
+        <span>Optional PNG or JPEG overlay</span>
+      </header>
+      <label for="pdf-editor-image">Image file</label>
+      <input
+        id="pdf-editor-image"
+        type="file"
+        accept="image/png,image/jpeg,.png,.jpg,.jpeg"
+        on:change={onEditorImagePicked}
+        disabled={busy || files.length < 1}
+      />
+      <div class="number-grid">
+        <div>
+          <label for="pdf-editor-image-x">X (%)</label>
+          <input id="pdf-editor-image-x" type="number" min="0" max="100" step="0.1" bind:value={editorImageX} disabled={busy} />
+        </div>
+        <div>
+          <label for="pdf-editor-image-y">Y (%)</label>
+          <input id="pdf-editor-image-y" type="number" min="0" max="100" step="0.1" bind:value={editorImageY} disabled={busy} />
+        </div>
+        <div>
+          <label for="pdf-editor-image-width">Width (%)</label>
+          <input id="pdf-editor-image-width" type="number" min="2" max="100" step="0.1" bind:value={editorImageWidth} disabled={busy} />
+        </div>
+        <div>
+          <label for="pdf-editor-image-height">Height (%)</label>
+          <input id="pdf-editor-image-height" type="number" min="2" max="100" step="0.1" bind:value={editorImageHeight} disabled={busy} />
+        </div>
+      </div>
+      <label for="pdf-editor-image-opacity">Image opacity (%)</label>
+      <input id="pdf-editor-image-opacity" type="number" min="0" max="100" step="1" bind:value={editorImageOpacity} disabled={busy} />
+      <div class="actions">
+        <button class="secondary" type="button" on:click={addEditorImageAnnotation} disabled={busy || !!editorSelectionError}>
+          Add Image To Target Pages
+        </button>
+        <button class="secondary" type="button" on:click={() => removeLastEditorAnnotation("images")} disabled={busy}>
+          Remove Last Image (Current Page)
+        </button>
+      </div>
+
+      <hr class="watermark-divider" />
+
+      <header>
+        <h4>Queued annotations</h4>
+        <span>{countEditorAnnotations()} item(s)</span>
+      </header>
+      <small>Current page {previewPage}: {editorPageAnnotationSummary(previewPage)}</small>
+      {#if Object.keys(editorAnnotationsByPage).length > 0}
+        <ul class="editor-queue-list">
+          {#each Object.entries(editorAnnotationsByPage).sort((a, b) => Number.parseInt(a[0], 10) - Number.parseInt(b[0], 10)) as [pageNum, set] (pageNum)}
+            <li>
+              <strong>Page {pageNum}</strong>
+              <span>Text {set.texts?.length || 0} · Strokes {set.strokes?.length || 0} · Images {set.images?.length || 0}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <div class="actions">
+        <button class="secondary" type="button" on:click={undoEditorChange} disabled={busy || editorHistoryIndex <= 0}>
+          Undo
+        </button>
+        <button class="secondary" type="button" on:click={redoEditorChange} disabled={busy || editorHistoryIndex < 0 || editorHistoryIndex >= editorHistory.length - 1}>
+          Redo
+        </button>
+        <button class="secondary" type="button" on:click={clearEditorAnnotationsForPages} disabled={busy || countEditorAnnotations() < 1}>
+          Clear Target Page Annotations
+        </button>
+      </div>
+
+      <div class="actions">
+        <button class="secondary" type="button" on:click={() => run("edit-annotate")} disabled={busy || files.length < 1 || countEditorAnnotations() < 1 || !!editorSelectionError}>
+          Export Edited PDF
+        </button>
+      </div>
+      <small>Beta behavior: annotations are burned into output pages and cannot be edited after export.</small>
     </section>
   </details>
 
@@ -2591,6 +3816,66 @@
     margin: 0.2rem 0 0;
   }
 
+  .editor-queue-list {
+    list-style: none;
+    margin: 0.45rem 0 0.7rem;
+    padding: 0;
+    display: grid;
+    gap: 0.38rem;
+  }
+
+  .editor-queue-list li {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: var(--app-radius-sm, 12px);
+    padding: 0.45rem 0.55rem;
+    background: var(--md-sys-color-surface);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+
+  .editor-queue-list li strong {
+    font-size: 0.82rem;
+  }
+
+  .editor-queue-list li span {
+    font-size: 0.75rem;
+    color: var(--md-sys-color-on-surface-variant);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .rich-editor-shell {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: var(--app-radius-sm, 12px);
+    overflow: hidden;
+    background: var(--md-sys-color-surface);
+    margin-top: 0.35rem;
+  }
+
+  .rich-editor-host {
+    min-height: 360px;
+  }
+
+  :global(.rich-editor-host .ql-toolbar.ql-snow) {
+    border: 0;
+    border-bottom: 1px solid var(--md-sys-color-outline-variant);
+    background: color-mix(in srgb, var(--md-sys-color-surface) 86%, var(--md-sys-color-primary) 14%);
+  }
+
+  :global(.rich-editor-host .ql-container.ql-snow) {
+    border: 0;
+    min-height: 300px;
+    font-size: 0.95rem;
+    line-height: 1.55;
+  }
+
+  :global(.rich-editor-host .ql-editor) {
+    min-height: 300px;
+  }
+
   .page-order-summary {
     display: block;
     margin: 0 0 0.35rem;
@@ -2723,6 +4008,60 @@
     background: var(--md-sys-color-surface);
     touch-action: manipulation;
     cursor: crosshair;
+  }
+
+  .text-layer-stage {
+    position: relative;
+    width: 100%;
+    margin: 0.45rem 0 0.75rem;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: var(--app-radius-sm, 12px);
+    overflow: hidden;
+    background: var(--md-sys-color-surface);
+  }
+
+  .text-layer-stage:focus-visible {
+    outline: 2px solid var(--md-sys-color-primary);
+    outline-offset: 2px;
+  }
+
+  .text-layer-stage img {
+    width: 100%;
+    display: block;
+    height: auto;
+    user-select: none;
+    pointer-events: none;
+  }
+
+  .text-layer-overlay {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+
+  .text-layer-block {
+    position: absolute;
+    transform: translate(-2%, -92%);
+    max-width: min(40ch, 50vw);
+    border: 1px dashed color-mix(in srgb, var(--md-sys-color-primary) 65%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--md-sys-color-surface) 72%, var(--md-sys-color-primary) 28%);
+    padding: 0.1rem 0.3rem;
+    cursor: move;
+    line-height: 1.2;
+    text-align: left;
+    white-space: pre-wrap;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
+  }
+
+  .text-layer-block.is-active {
+    border-style: solid;
+    border-color: var(--md-sys-color-primary);
+    box-shadow: 0 0 0 1px var(--md-sys-color-primary);
+  }
+
+  .text-layer-block.is-selected {
+    background: color-mix(in srgb, var(--md-sys-color-secondary-container) 70%, var(--md-sys-color-surface));
   }
 
   .watermark-stage-canvas {

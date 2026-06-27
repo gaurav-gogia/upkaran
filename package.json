@@ -36,6 +36,7 @@
         "pdf-lib": "*",
         "pdfjs-dist": "*",
         "plantuml-encoder": "*",
-        "qrcode": "*"
+        "qrcode": "*",
+        "quill": "^2.0.3"
     }
 }

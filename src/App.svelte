@@ -62,8 +62,9 @@
   let workspaceTitle = "Upkaran Workspace";
   let shortcutHelpOpen = false;
 
-  /** Which editor workspace is currently open (null | 'latex' | 'mermaid' | 'plantuml') */
+  /** Which editor workspace is currently open (null | 'latex' | 'mermaid' | 'plantuml' | 'pdf-direct') */
   let activeEditor = null;
+  let pdfDirectFile = null;
   let forensicsEntry = null;
   let forensicsModalOpen = false;
   let intakeCollapsed = false;
@@ -703,7 +704,16 @@
   }
 
   function closeEditor() {
+    pdfDirectFile = null;
     activeEditor = null;
+  }
+
+  function openPdfDirectEditor(event) {
+    const requested = event?.detail?.file || null;
+    const target = requested || effectivePdfFiles[0] || null;
+    if (!target) return;
+    pdfDirectFile = target;
+    activeEditor = "pdf-direct";
   }
 
   function openPickerFromFeature(group) {
@@ -1270,6 +1280,19 @@
     </div>
   {/if}
 
+  {#if activeEditor === 'pdf-direct' && pdfDirectFile}
+    <div transition:fade>
+      {#await import("./components/PdfDirectEditorWorkspace.svelte") then mod}
+        <svelte:component
+          this={mod.default}
+          fileEntry={pdfDirectFile}
+          on:filesreceived={onWorkspaceFiles}
+          on:close={closeEditor}
+        />
+      {/await}
+    </div>
+  {/if}
+
   <div id="files-section" class="content-grid">
     {#if entries.length > 0 && !intakeCollapsed && !intakeModalOpen}
       <aside class="workspace-files" aria-label="File drawer">
@@ -1314,6 +1337,7 @@
             on:progress={onProgress}
             on:error={onError}
             on:output={onOutput}
+            on:openlayouteditor={openPdfDirectEditor}
           />
         {/if}
 

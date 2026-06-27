@@ -745,6 +745,215 @@ export async function addPdfTextWatermark(entry, options = {}, onProgress = () =
   return new Blob([await doc.save()], { type: "application/pdf" });
 }
 
+function parseNormalizedCoordinate(value, fallback = 0) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return clampNumber(fallback, 0, 1);
+  return clampNumber(parsed, 0, 1);
+}
+
+function normalizePoint(point) {
+  if (!point) return null;
+
+  if (Array.isArray(point)) {
+    if (point.length < 2) return null;
+    return {
+      x: parseNormalizedCoordinate(point[0], 0),
+      y: parseNormalizedCoordinate(point[1], 0)
+    };
+  }
+
+  if (typeof point === "object") {
+    return {
+      x: parseNormalizedCoordinate(point.x, 0),
+      y: parseNormalizedCoordinate(point.y, 0)
+    };
+  }
+
+  return null;
+}
+
+function topLeftNormToPdfY(yNorm, heightPx, pageHeight) {
+  return pageHeight - (yNorm * pageHeight) - heightPx;
+}
+
+function normalizedLength(value, pageSpan, fallback) {
+  const parsed = Number.parseFloat(value);
+  const norm = Number.isFinite(parsed) ? parsed : fallback;
+  return clampNumber(norm, 0, 1) * pageSpan;
+}
+
+export async function addPdfAnnotations(entry, options = {}, onProgress = () => {}) {
+  const pdfBytes = await entry.file.arrayBuffer();
+  const doc = await PDFDocument.load(pdfBytes);
+  const pageCount = doc.getPageCount();
+
+  const ranges = parseSelectionOrAll(options.selection ?? "", pageCount);
+  const indices = expandRangesToIndices(ranges, pageCount, { dedupe: true });
+  if (indices.length < 1) {
+    throw new Error("No pages selected for editing.");
+  }
+
+  const annotationSet = options.annotations || {};
+  const annotationsByPage = options.annotationsByPage && typeof options.annotationsByPage === "object"
+    ? options.annotationsByPage
+    : null;
+  const textAnnotations = Array.isArray(annotationSet.texts) ? annotationSet.texts : [];
+  const strokeAnnotations = Array.isArray(annotationSet.strokes) ? annotationSet.strokes : [];
+  const imageAnnotations = Array.isArray(annotationSet.images) ? annotationSet.images : [];
+
+  let hasAnyAnnotations =
+    textAnnotations.length > 0 ||
+    strokeAnnotations.length > 0 ||
+    imageAnnotations.length > 0;
+
+  if (!hasAnyAnnotations && annotationsByPage) {
+    for (const pageIndex of indices) {
+      const perPage = resolvePlacementForPage(annotationsByPage, pageIndex + 1) || {};
+      if (
+        (Array.isArray(perPage.texts) && perPage.texts.length > 0) ||
+        (Array.isArray(perPage.strokes) && perPage.strokes.length > 0) ||
+        (Array.isArray(perPage.images) && perPage.images.length > 0)
+      ) {
+        hasAnyAnnotations = true;
+        break;
+      }
+    }
+  }
+
+  if (!hasAnyAnnotations) {
+    throw new Error("Add at least one text, stroke, or image annotation before exporting.");
+  }
+
+  const textFont = await doc.embedFont(StandardFonts.Helvetica);
+  const imageCache = new Map();
+
+  for (let i = 0; i < indices.length; i += 1) {
+    const pageIndex = indices[i];
+    const page = doc.getPage(pageIndex);
+    const pageWidth = page.getWidth();
+    const pageHeight = page.getHeight();
+    const perPageSet = annotationsByPage
+      ? resolvePlacementForPage(annotationsByPage, pageIndex + 1) || {}
+      : {};
+
+    const pageTextAnnotations = [
+      ...textAnnotations,
+      ...(Array.isArray(perPageSet.texts) ? perPageSet.texts : [])
+    ];
+    const pageStrokeAnnotations = [
+      ...strokeAnnotations,
+      ...(Array.isArray(perPageSet.strokes) ? perPageSet.strokes : [])
+    ];
+    const pageImageAnnotations = [
+      ...imageAnnotations,
+      ...(Array.isArray(perPageSet.images) ? perPageSet.images : [])
+    ];
+
+    for (const text of pageTextAnnotations) {
+      const label = `${text?.text || ""}`.trim();
+      if (!label) continue;
+
+      const xNorm = parseNormalizedCoordinate(text?.x, 0.08);
+      const yNorm = parseNormalizedCoordinate(text?.y, 0.12);
+      const size = clampNumber(Number.parseFloat(text?.size), 8, 240);
+      const opacity = clampNumber(Number.parseFloat(text?.opacity ?? 1), 0, 1);
+      const rotation = parseImageRotation(text?.rotation ?? 0);
+      const color = parseHexColor(text?.colorHex ?? "#111827");
+
+      const drawX = xNorm * pageWidth;
+      const drawY = topLeftNormToPdfY(yNorm, size, pageHeight);
+
+      page.drawText(label, {
+        x: clampNumber(drawX, 0, Math.max(0, pageWidth - 1)),
+        y: clampNumber(drawY, 0, Math.max(0, pageHeight - size)),
+        size,
+        font: textFont,
+        color,
+        opacity,
+        rotate: degrees(rotation)
+      });
+    }
+
+    for (const stroke of pageStrokeAnnotations) {
+      const points = Array.isArray(stroke?.points)
+        ? stroke.points.map(normalizePoint).filter(Boolean)
+        : [];
+
+      if (points.length < 2) continue;
+
+      const color = parseHexColor(stroke?.colorHex ?? "#ef4444");
+      const thickness = Math.max(0.5, normalizedLength(stroke?.width, pageWidth, 0.004));
+      const opacity = clampNumber(Number.parseFloat(stroke?.opacity ?? 0.8), 0, 1);
+
+      for (let p = 1; p < points.length; p += 1) {
+        const start = points[p - 1];
+        const end = points[p];
+
+        page.drawLine({
+          start: {
+            x: start.x * pageWidth,
+            y: pageHeight - (start.y * pageHeight)
+          },
+          end: {
+            x: end.x * pageWidth,
+            y: pageHeight - (end.y * pageHeight)
+          },
+          thickness,
+          color,
+          opacity
+        });
+      }
+    }
+
+    for (const image of pageImageAnnotations) {
+      const file = image?.file;
+      if (!(file instanceof Blob)) continue;
+
+      let embeddedImage = imageCache.get(file);
+      if (!embeddedImage) {
+        const imageExt = resolveImageExt(file);
+        if (!imageExt) {
+          throw new Error("Only PNG and JPEG editor images are supported.");
+        }
+        const imageBytes = await file.arrayBuffer();
+        embeddedImage = imageExt === "png"
+          ? await doc.embedPng(imageBytes)
+          : await doc.embedJpg(imageBytes);
+        imageCache.set(file, embeddedImage);
+      }
+
+      const xNorm = parseNormalizedCoordinate(image?.x, 0.68);
+      const yNorm = parseNormalizedCoordinate(image?.y, 0.75);
+      const widthNorm = clampNumber(Number.parseFloat(image?.width ?? 0.2), 0.02, 1);
+      const heightNorm = clampNumber(Number.parseFloat(image?.height ?? 0.12), 0.02, 1);
+      const opacity = clampNumber(Number.parseFloat(image?.opacity ?? 1), 0, 1);
+      const rotation = parseImageRotation(image?.rotation ?? 0);
+
+      const drawWidth = widthNorm * pageWidth;
+      const drawHeight = heightNorm * pageHeight;
+      const drawX = clampNumber(xNorm * pageWidth, 0, Math.max(0, pageWidth - drawWidth));
+      const drawY = clampNumber(
+        topLeftNormToPdfY(yNorm, drawHeight, pageHeight),
+        0,
+        Math.max(0, pageHeight - drawHeight)
+      );
+
+      page.drawImage(embeddedImage, {
+        x: drawX,
+        y: drawY,
+        width: drawWidth,
+        height: drawHeight,
+        opacity,
+        rotate: degrees(rotation)
+      });
+    }
+
+    onProgress(Math.round(((i + 1) / indices.length) * 100));
+  }
+
+  return new Blob([await doc.save()], { type: "application/pdf" });
+}
+
 export async function compressPdf(entry, _quality = 0.75, onProgress = () => {}) {
   onProgress(30);
   const bytes = await entry.file.arrayBuffer();
@@ -865,6 +1074,197 @@ export async function renderPdfPreviewPage(entry, options = {}) {
     height: canvas.height,
     dataUrl: canvas.toDataURL("image/png")
   };
+}
+
+function escapeEditorHtml(value) {
+  return `${value ?? ""}`
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function normalizePdfTextLine(text) {
+  return `${text || ""}`.replace(/\s+/g, " ").trim();
+}
+
+function collectPageLines(textItems = []) {
+  const rows = [];
+  for (const item of textItems) {
+    const text = normalizePdfTextLine(item?.str);
+    if (!text) continue;
+    const transform = Array.isArray(item?.transform) ? item.transform : [];
+    const x = Number.isFinite(transform[4]) ? transform[4] : 0;
+    const y = Number.isFinite(transform[5]) ? transform[5] : 0;
+    rows.push({ text, x, y });
+  }
+
+  rows.sort((a, b) => {
+    if (Math.abs(a.y - b.y) > 0.8) return b.y - a.y;
+    return a.x - b.x;
+  });
+
+  const grouped = [];
+  for (const row of rows) {
+    const bucket = grouped.find((line) => Math.abs(line.y - row.y) < 2.5);
+    if (!bucket) {
+      grouped.push({ y: row.y, parts: [row] });
+    } else {
+      bucket.parts.push(row);
+    }
+  }
+
+  return grouped
+    .map((line) => line.parts.sort((a, b) => a.x - b.x).map((item) => item.text).join(" "))
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+export async function extractPdfTextForRichEditor(entry, onProgress = () => {}) {
+  const { getDocument } = await getPdfRuntime();
+  const bytes = await entry.file.arrayBuffer();
+  const loadingTask = getDocument({ data: bytes });
+  const pdf = await loadingTask.promise;
+  const totalPages = pdf.numPages;
+  const pageLines = [];
+
+  for (let pageNum = 1; pageNum <= totalPages; pageNum += 1) {
+    const page = await pdf.getPage(pageNum);
+    const textContent = await page.getTextContent();
+    const lines = collectPageLines(textContent?.items || []);
+    pageLines.push({ page: pageNum, lines });
+    onProgress(Math.round((pageNum / totalPages) * 100));
+  }
+
+  const bodyHtml = pageLines.map((page) => {
+    const paragraphs = page.lines.length > 0
+      ? page.lines.map((line) => `<p>${escapeEditorHtml(line)}</p>`).join("")
+      : "<p><em>(No extractable text on this page.)</em></p>";
+    return `<section class=\"pdf-editor-page\" data-page=\"${page.page}\"><h2>Page ${page.page}</h2>${paragraphs}</section>`;
+  }).join("\n");
+
+  return {
+    totalPages,
+    pageLines,
+    html: bodyHtml
+  };
+}
+
+function normalizeTextBlock(item, pageNum, viewport) {
+  const text = normalizePdfTextLine(item?.str);
+  if (!text) return null;
+
+  const transform = Array.isArray(item?.transform) ? item.transform : [];
+  const rawX = Number.isFinite(transform[4]) ? transform[4] : 0;
+  const rawY = Number.isFinite(transform[5]) ? transform[5] : 0;
+  const viewportWidth = Math.max(1, Number.isFinite(viewport?.width) ? viewport.width : 1);
+  const viewportHeight = Math.max(1, Number.isFinite(viewport?.height) ? viewport.height : 1);
+
+  const x = clampNumber(rawX / viewportWidth, 0, 1);
+  const y = clampNumber(1 - (rawY / viewportHeight), 0, 1);
+
+  const inferredSize = Math.max(
+    8,
+    Math.min(48, Math.abs(Number.parseFloat(transform[0])) || Math.abs(Number.parseFloat(transform[3])) || 12)
+  );
+
+  return {
+    id: `p${pageNum}-${rawX.toFixed(2)}-${rawY.toFixed(2)}-${text.slice(0, 16)}`,
+    text,
+    x,
+    y,
+    size: inferredSize,
+    colorHex: "#111827",
+    opacity: 1
+  };
+}
+
+export async function extractPdfTextBlocks(entry, options = {}, onProgress = () => {}) {
+  const { getDocument } = await getPdfRuntime();
+  const bytes = await entry.file.arrayBuffer();
+  const loadingTask = getDocument({ data: bytes });
+  const pdf = await loadingTask.promise;
+  const totalPages = pdf.numPages;
+  const maxPerPage = Math.max(20, Number.parseInt(options.maxPerPage ?? "240", 10) || 240);
+  const blocksByPage = {};
+
+  for (let pageNum = 1; pageNum <= totalPages; pageNum += 1) {
+    const page = await pdf.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 1 });
+    const textContent = await page.getTextContent();
+    const rows = Array.isArray(textContent?.items) ? textContent.items : [];
+
+    const blocks = rows
+      .map((item) => normalizeTextBlock(item, pageNum, viewport))
+      .filter(Boolean)
+      .slice(0, maxPerPage);
+
+    blocksByPage[String(pageNum)] = blocks;
+    onProgress(Math.round((pageNum / totalPages) * 100));
+  }
+
+  return {
+    totalPages,
+    blocksByPage
+  };
+}
+
+function wrapRichEditorDocument(contentHtml) {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      body {
+        margin: 0;
+        padding: 26px;
+        font-family: "Segoe UI", "Inter", "Arial", sans-serif;
+        color: #111827;
+        line-height: 1.5;
+        background: #ffffff;
+      }
+      .pdf-editor-page {
+        border: 1px solid #d1d5db;
+        border-radius: 14px;
+        padding: 18px;
+        margin-bottom: 18px;
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .pdf-editor-page h2 {
+        margin: 0 0 12px;
+        font-size: 14px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: #4b5563;
+      }
+      .pdf-editor-page p {
+        margin: 0 0 0.52rem;
+        font-size: 13.2px;
+      }
+      .pdf-editor-page p:last-child {
+        margin-bottom: 0;
+      }
+    </style>
+  </head>
+  <body>
+    ${contentHtml}
+  </body>
+</html>`;
+}
+
+export async function richEditorHtmlToPdf(contentHtml, onProgress = () => {}) {
+  const html = wrapRichEditorDocument(contentHtml || "<p></p>");
+  onProgress(15);
+  const { htmlStringToMultiPagePdf } = await import("./workspace-pdf.js");
+  const blob = await htmlStringToMultiPagePdf(html);
+  onProgress(100);
+  return blob;
 }
 
 export async function reorderPdfPages(entry, orderedPages, onProgress = () => {}) {
